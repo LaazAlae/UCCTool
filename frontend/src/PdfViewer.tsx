@@ -29,7 +29,7 @@ interface Props {
   activeField: string | null;
 }
 
-const PAD = 0.004;
+const PAD = 0.008;
 
 export function PdfViewer({ jobId, pageCount, highlights, onHighlightClick, activeField }: Props) {
   const [pages, setPages] = useState<RenderedPage[]>([]);
@@ -38,11 +38,15 @@ export function PdfViewer({ jobId, pageCount, highlights, onHighlightClick, acti
   const containerRef = useRef<HTMLDivElement>(null);
   const highlightRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // Scroll to active highlight
+  // Scroll to the exact source box when an input receives focus.
   useEffect(() => {
     if (!activeField) return;
-    const el = highlightRefs.current.get(activeField);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    for (const [key, el] of highlightRefs.current) {
+      if (key === activeField || key.split(",").includes(activeField)) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        break;
+      }
+    }
   }, [activeField]);
 
   // Load + render PDF
@@ -123,9 +127,10 @@ export function PdfViewer({ jobId, pageCount, highlights, onHighlightClick, acti
               <div ref={(el) => mountCanvas(pg.pageIndex, el)} style={{ position: "relative" }} />
 
               {pageHL.map((h) => {
+                // Textract boxes are normalized 0-1; convert them to rendered page pixels.
                 const dw = containerRef.current ? containerRef.current.clientWidth - 32 : pg.width;
                 const dh = dw * (pg.pdfHeight / pg.pdfWidth);
-                const isActive = activeField === h.fieldKey;
+                const isActive = activeField ? h.fieldKey.split(",").includes(activeField) : false;
                 const color = h.confirmed ? "rgba(22,163,74," : "rgba(220,38,38,";
 
                 return (

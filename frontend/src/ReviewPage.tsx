@@ -1,17 +1,22 @@
 import { useState, useEffect } from "react";
-import { api } from "./api";
-import type { ExtractionResult, ListingEntry } from "./api";
+import { api, RECORD_FIELDS, FIELD_KEYS } from "./api";
+import type { CostSummary, FieldKey, ListingEntry, ListingMeta } from "./api";
 import { PdfViewer } from "./PdfViewer";
 import type { Highlight } from "./PdfViewer";
 import { ListingForm } from "./ListingForm";
 
-const FIELD_LABELS: Record<string, string> = {
+const FIELD_LABELS: Record<FieldKey, string> = {
   fileType: "File Type",
-  entityName: "Entity Name",
+  entityName: "Debtor",
   entityType: "Entity Type",
   fileNumber: "File/Case #",
   fileDate: "File Date",
   securedParty: "Secured Party",
+};
+
+const DEFAULT_META: ListingMeta = {
+  preparedFor: "", clientMatter: "", projectNumber: "", projectMgr: "",
+  jurisdiction: "", summary: "", thruDate: "", yearsSearched: "",
 };
 
 interface Props {
@@ -20,107 +25,262 @@ interface Props {
   pageCount: number;
 }
 
-type Stage = "extracting" | "reviewing" | "error";
+type Stage = "ocr" | "extracting" | "reviewing" | "error";
 
 export function ReviewPage({ jobId, fileName, pageCount }: Props) {
-  const [stage, setStage] = useState<Stage>("extracting");
+  const [stage, setStage] = useState<Stage>("ocr");
   const [error, setError] = useState<string | null>(null);
-  const [extractions, setExtractions] = useState<ExtractionResult[]>([]);
+  const [ocrBlocks, setOcrBlocks] = useState(0);
   const [entries, setEntries] = useState<ListingEntry[]>([]);
+  const [cost, setCost] = useState<CostSummary>({});
   const [saving, setSaving] = useState(false);
   const [activeField, setActiveField] = useState<string | null>(null);
+  const [deleted, setDeleted] = useState<{ entry: ListingEntry; index: number } | null>(null);
 
-  useEffect(() => { runExtraction(); }, [jobId]);
+  const [meta, setMeta] = useState<ListingMeta>({ ...DEFAULT_META });
+  const [debtor, setDebtor] = useState("");
+  const [debtorConfidence, setDebtorConfidence] = useState(0);
+  const [debtorConfirmed, setDebtorConfirmed] = useState(false);
+  const [partyLabel, setPartyLabel] = useState("Secured Party");
 
-  async function runExtraction() {
-    try {
-      setStage("extracting");
-      const res = await api.extract(jobId);
-      setExtractions(res.extractions);
-      setEntries(res.extractions.map((ext) => ({
-        id: crypto.randomUUID(),
-        fileType: ext.fileType.value,
-        entityName: ext.entityName.value,
-        entityType: ext.entityType.value,
-        fileNumber: ext.fileNumber.value,
-        fileDate: ext.fileDate.value,
-        securedParty: ext.securedParty.value,
-        confirmed: false,
-      })));
-      setStage("reviewing");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Extraction failed");
-      setStage("error");
-    }
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setStage("ocr");
+        setError(null);
+
+        const ocrRes = await api.ocr(jobId);
+        if (cancelled) return;
+        setOcrBlocks(ocrRes.blocks);
+
+        setStage("extracting");
+        const res = await api.extract(jobId);
+        if (cancelled) return;
+        setCost(res.cost || {});
+
+        const ext = res.extractions;
+        setEntries(ext.map((e) => ({ id: crypto.randomUUID(), ...e })));
+
+        // Pick debtor from the most common entityName
+        const counts = new Map<string, number>();
+        ext.forEach((e) => {
+          const n = e.entityName.value;
+          if (n) counts.set(n, (counts.get(n) || 0) + 1);
+        });
+        let best = ext[0]?.entityName.value || "";
+        let bestCount = 0;
+        counts.forEach((c, n) => { if (c > bestCount) { best = n; bestCount = c; } });
+        setDebtor(best);
+        setDebtorConfidence(ext[0]?.entityName.confidence || 0);
+
+        // Auto-detect party label from file types
+        const isSuits = ext.some((e) => {
+          const t = e.fileType.value.toLowerCase();
+          return t.includes("suit") || t.includes("judgment");
+        });
+        setPartyLabel(isSuits ? "Reverse Party" : "Secured Party");
+
+        setStage("reviewing");
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Something went wrong");
+        setStage("error");
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [jobId]);
+
+  function updateField(index: number, key: FieldKey, patch: Partial<ListingEntry[FieldKey]>) {
+    setEntries((prev) => prev.map((entry, i) => i === index ? { ...entry, [key]: { ...entry[key], ...patch } } : entry));
   }
 
-  function handleEntryChange(index: number, field: string, value: string) {
-    const prev = entries[index]?.[field as keyof ListingEntry] as string;
-    api.log(jobId, "field_edit", { record: index, field, from: prev, to: value });
-    setEntries((e) => e.map((r, i) => i === index ? { ...r, [field]: value } : r));
+  function handleFieldChange(index: number, key: FieldKey, value: string) {
+    api.log(jobId, "field_edit", { record: index, field: key, to: value });
+    updateField(index, key, { value, confirmed: false });
   }
 
-  function handleEntryConfirm(index: number) {
-    const next = !entries[index]?.confirmed;
-    api.log(jobId, next ? "record_confirm" : "record_unconfirm", { record: index });
-    setEntries((e) => e.map((r, i) => i === index ? { ...r, confirmed: !r.confirmed } : r));
+  function handleFieldConfirm(index: number, key: FieldKey) {
+    const next = !entries[index]?.[key].confirmed;
+    api.log(jobId, next ? "field_confirm" : "field_unconfirm", { record: index, field: key });
+    updateField(index, key, { confirmed: next });
   }
 
-  function handleEntityNameChange(value: string) {
-    api.log(jobId, "entity_name_change", { value });
-    setEntries((e) => e.map((r) => ({ ...r, entityName: value })));
+  function handleMetaChange(key: keyof ListingMeta, value: string) {
+    setMeta((prev) => ({ ...prev, [key]: value }));
   }
 
-  function handleEntityTypeChange(value: string) {
-    api.log(jobId, "entity_type_change", { value });
-    setEntries((e) => e.map((r) => ({ ...r, entityType: value })));
+  function handleDebtorChange(value: string) {
+    setDebtor(value);
+    setDebtorConfirmed(false);
+    setEntries((prev) => prev.map((entry) => ({
+      ...entry,
+      entityName: { ...entry.entityName, value, confirmed: false },
+    })));
+  }
+
+  function handleDebtorConfirm() {
+    const next = !debtorConfirmed;
+    setDebtorConfirmed(next);
+    api.log(jobId, next ? "debtor_confirm" : "debtor_unconfirm", { debtor });
+    setEntries((prev) => prev.map((entry) => ({
+      ...entry,
+      entityName: { ...entry.entityName, value: debtor, confirmed: next },
+      entityType: { ...entry.entityType, confirmed: next },
+    })));
+  }
+
+  function handleRowConfirm(index: number) {
+    const allDone = RECORD_FIELDS.every((key) => entries[index]?.[key].confirmed);
+    const next = !allDone;
+    api.log(jobId, next ? "row_confirm" : "row_unconfirm", { record: index });
+    setEntries((prev) => prev.map((entry, i) => {
+      if (i !== index) return entry;
+      const updated = { ...entry };
+      for (const key of RECORD_FIELDS) {
+        (updated as Record<string, unknown>)[key] = { ...entry[key], confirmed: next };
+      }
+      return updated as ListingEntry;
+    }));
   }
 
   function handleDeleteEntry(index: number) {
     api.log(jobId, "record_delete", { record: index });
-    setEntries((e) => e.filter((_, i) => i !== index));
-    setExtractions((e) => e.filter((_, i) => i !== index));
+    const entry = entries[index];
+    setDeleted({ entry, index });
+    setEntries((prev) => prev.filter((_, i) => i !== index));
   }
 
-  function handleFieldFocus(recordIndex: number, fieldKey: string) {
-    setActiveField(`${recordIndex}-${fieldKey}`);
+  function handleUndoDelete() {
+    if (!deleted) return;
+    api.log(jobId, "record_restore", { record: deleted.index });
+    setEntries((prev) => {
+      const next = [...prev];
+      next.splice(deleted.index, 0, deleted.entry);
+      return next;
+    });
+    setDeleted(null);
+  }
+
+  function handleDismissDeleted() {
+    setDeleted(null);
+  }
+
+  function handleAddEntry() {
+    const blank: ListingEntry = {
+      id: crypto.randomUUID(),
+      fileType: { value: "", confidence: 0, boundingBox: null, confirmed: false },
+      entityName: { value: debtor, confidence: 0, boundingBox: null, confirmed: debtorConfirmed },
+      entityType: { value: "", confidence: 0, boundingBox: null, confirmed: debtorConfirmed },
+      fileNumber: { value: "", confidence: 0, boundingBox: null, confirmed: false },
+      fileDate: { value: "", confidence: 0, boundingBox: null, confirmed: false },
+      securedParty: { value: "", confidence: 0, boundingBox: null, confirmed: false },
+    };
+    api.log(jobId, "record_add", { record: entries.length });
+    setEntries((prev) => [...prev, blank]);
+  }
+
+  function handleFieldFocus(recordIndex: number, key: FieldKey) {
+    setActiveField(`${recordIndex}-${key}`);
+  }
+
+  function handleDebtorFocus() {
+    setActiveField("debtor");
   }
 
   function handleHighlightClick(fieldKey: string) {
-    const idx = parseInt(fieldKey.split("-")[0], 10);
-    if (!isNaN(idx)) handleEntryConfirm(idx);
+    for (const fk of fieldKey.split(",")) {
+      if (fk === "debtor") {
+        handleDebtorConfirm();
+      } else {
+        const [rawIndex, rawKey] = fk.split("-");
+        const index = Number(rawIndex);
+        const key = rawKey as FieldKey;
+        if (!Number.isNaN(index) && RECORD_FIELDS.includes(key)) handleFieldConfirm(index, key);
+      }
+    }
   }
 
   async function handleSave() {
     setSaving(true);
+    setError(null);
     try {
-      await api.save(jobId, entries);
+      const saveMeta = { ...meta, debtor, partyLabel, status: "" };
+      await api.save(jobId, entries, saveMeta);
       api.log(jobId, "save_complete", { entries: entries.length });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
+      api.log(jobId, "save_failed", { message: err instanceof Error ? err.message : "Save failed" });
     } finally {
       setSaving(false);
     }
   }
 
-  // Build highlights from extractions
-  const highlights: Highlight[] = extractions.flatMap((ext, ri) =>
-    (Object.keys(FIELD_LABELS) as (keyof ExtractionResult)[])
-      .filter((key) => ext[key]?.boundingBox)
-      .map((key) => ({
-        fieldKey: `${ri}-${key}`,
-        label: `#${ri + 1} ${FIELD_LABELS[key]}`,
-        boundingBox: ext[key].boundingBox!,
-        confirmed: entries[ri]?.confirmed || false,
-      }))
-  );
+  async function handleDownloadPdf() {
+    try {
+      const pdfMeta = { ...meta, debtor, partyLabel, status: "" };
+      const pdfRecords = entries.map((e) => ({
+        fileDate: e.fileDate.value,
+        fileNumber: e.fileNumber.value,
+        fileType: e.fileType.value,
+        securedParty: e.securedParty.value,
+      }));
+      await api.downloadPdf(jobId, pdfMeta, pdfRecords);
+      api.log(jobId, "pdf_downloaded", { records: entries.length });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PDF generation failed");
+    }
+  }
 
-  if (stage === "extracting") {
+  // Build highlights: debtor (from first record) + per-record table fields only
+  const highlightMap = new Map<string, { fields: string[]; label: string; boundingBox: Highlight["boundingBox"]; confirmed: boolean }>();
+
+  entries.forEach((entry, ri) => {
+    FIELD_KEYS.forEach((key) => {
+      if (!entry[key].boundingBox) return;
+      const bb = entry[key].boundingBox!;
+      const boxKey = `${bb.page}:${bb.x}:${bb.y}`;
+      const fieldId = key === "entityName" ? "debtor" : `${ri}-${key}`;
+      const isConfirmed = key === "entityName" || key === "entityType" ? debtorConfirmed : entry[key].confirmed;
+      const existing = highlightMap.get(boxKey);
+      if (existing) {
+        if (!existing.fields.includes(fieldId)) existing.fields.push(fieldId);
+        existing.confirmed = existing.confirmed && isConfirmed;
+      } else {
+        highlightMap.set(boxKey, {
+          fields: [fieldId],
+          label: `#${ri + 1} ${FIELD_LABELS[key]}`,
+          boundingBox: bb,
+          confirmed: isConfirmed,
+        });
+      }
+    });
+  });
+
+  const highlights: Highlight[] = [...highlightMap.values()].map((h) => ({
+    fieldKey: h.fields.join(","),
+    label: h.label,
+    boundingBox: h.boundingBox,
+    confirmed: h.confirmed,
+  }));
+
+  if (stage === "ocr" || stage === "extracting") {
     return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: 400, flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: 400, flexDirection: "column", gap: 12 }}>
         <div style={{ width: 40, height: 40, border: "3px solid var(--border)", borderTopColor: "var(--primary)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-        <p style={{ color: "var(--muted)" }}>Analyzing evidence document...</p>
-        <p style={{ fontSize: 13, color: "var(--muted)" }}>{fileName}</p>
+        <p style={{ fontWeight: 500 }}>
+          {stage === "ocr" ? "Scanning document..." : "Extracting records..."}
+        </p>
+        <p style={{ fontSize: 13, color: "var(--muted)" }}>
+          {stage === "ocr"
+            ? `Reading text from ${pageCount} page${pageCount !== 1 ? "s" : ""} using OCR`
+            : `Analyzing ${ocrBlocks.toLocaleString()} text blocks with AI`}
+        </p>
+        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+          Step {stage === "ocr" ? "1" : "2"} of 2
+        </p>
       </div>
     );
   }
@@ -129,7 +289,7 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: 400, flexDirection: "column", gap: 12 }}>
         <p style={{ color: "var(--danger)", fontWeight: 500 }}>{error || "Something went wrong"}</p>
-        <button onClick={runExtraction} style={{ padding: "8px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 6 }}>
+        <button onClick={() => window.location.reload()} style={{ padding: "8px 20px", background: "var(--primary)", color: "white", border: "none", borderRadius: 6 }}>
           Retry
         </button>
       </div>
@@ -138,13 +298,14 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
 
   return (
     <div>
-      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
           <p style={{ fontSize: 13, color: "var(--muted)" }}>
             {pageCount} page{pageCount !== 1 ? "s" : ""} &middot; {entries.length} record{entries.length !== 1 ? "s" : ""} found
           </p>
         </div>
+        <CostPanel cost={cost} />
       </div>
 
       {error && (
@@ -153,29 +314,52 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 480px", gap: 16, height: "calc(100vh - 180px)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 500px", gap: 16, height: "calc(100vh - 190px)" }}>
         <div style={{ background: "var(--surface)", borderRadius: "var(--radius)", border: "1px solid var(--border)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <PdfViewer
-            jobId={jobId}
-            pageCount={pageCount}
-            highlights={highlights}
-            onHighlightClick={handleHighlightClick}
-            activeField={activeField}
-          />
+          <PdfViewer jobId={jobId} pageCount={pageCount} highlights={highlights} onHighlightClick={handleHighlightClick} activeField={activeField} />
         </div>
 
         <ListingForm
-          extractions={extractions}
+          meta={meta}
+          onMetaChange={handleMetaChange}
+          debtor={debtor}
+          debtorConfidence={debtorConfidence}
+          debtorConfirmed={debtorConfirmed}
+          onDebtorChange={handleDebtorChange}
+          onDebtorConfirm={handleDebtorConfirm}
+          onDebtorFocus={handleDebtorFocus}
+          partyLabel={partyLabel}
+          onPartyLabelChange={setPartyLabel}
           entries={entries}
-          onEntryChange={handleEntryChange}
-          onEntryConfirm={handleEntryConfirm}
-          onEntityNameChange={handleEntityNameChange}
-          onEntityTypeChange={handleEntityTypeChange}
+          onFieldChange={handleFieldChange}
+          onRowConfirm={handleRowConfirm}
           onDeleteEntry={handleDeleteEntry}
+          onAddEntry={handleAddEntry}
+          deleted={deleted}
+          onUndoDelete={handleUndoDelete}
+          onDismissDeleted={handleDismissDeleted}
           onFieldFocus={handleFieldFocus}
           onSave={handleSave}
+          onDownloadPdf={handleDownloadPdf}
           saving={saving}
         />
+      </div>
+    </div>
+  );
+}
+
+function CostPanel({ cost }: { cost: CostSummary }) {
+  const total = cost.totalEstimatedCostUsd ?? ((cost.ocr?.estimatedCostUsd || 0) + (cost.ai?.estimatedCostUsd || 0));
+  return (
+    <div style={{ minWidth: 260, border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", padding: "8px 10px", fontSize: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
+        <span>Estimated Job Cost</span>
+        <span>${total.toFixed(4)}</span>
+      </div>
+      <div style={{ color: "var(--muted)", display: "grid", gap: 2 }}>
+        <span>OCR: ${Number(cost.ocr?.estimatedCostUsd || 0).toFixed(4)} {cost.ocr?.pages ? `(${cost.ocr.pages} pages)` : ""}</span>
+        <span>AI: ${Number(cost.ai?.estimatedCostUsd || 0).toFixed(4)} {cost.ai?.inputTokens ? `(${cost.ai.inputTokens.toLocaleString()} in · ${(cost.ai.outputTokens || 0).toLocaleString()} out)` : ""}</span>
+        {cost.maxJobCostUsd !== undefined && <span>Job cap: ${cost.maxJobCostUsd.toFixed(2)}</span>}
       </div>
     </div>
   );

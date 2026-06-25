@@ -1,156 +1,209 @@
-import type { ExtractionResult, ListingEntry } from "./api";
+import { useEffect } from "react";
+import type { FieldKey, ListingEntry, ListingMeta } from "./api";
+
+const RECORD_FIELDS: FieldKey[] = ["fileDate", "fileNumber", "fileType", "securedParty"];
+const PARTY_LABELS = ["Secured Party", "Reverse Party", "Plaintiff"];
 
 interface Props {
-  extractions: ExtractionResult[];
+  meta: ListingMeta;
+  onMetaChange: (key: keyof ListingMeta, value: string) => void;
+  debtor: string;
+  debtorConfidence: number;
+  debtorConfirmed: boolean;
+  onDebtorChange: (value: string) => void;
+  onDebtorConfirm: () => void;
+  onDebtorFocus: () => void;
+  partyLabel: string;
+  onPartyLabelChange: (value: string) => void;
   entries: ListingEntry[];
-  onEntryChange: (index: number, field: string, value: string) => void;
-  onEntryConfirm: (index: number) => void;
-  onEntityNameChange: (value: string) => void;
-  onEntityTypeChange: (value: string) => void;
+  onFieldChange: (index: number, field: FieldKey, value: string) => void;
+  onRowConfirm: (index: number) => void;
   onDeleteEntry: (index: number) => void;
-  onFieldFocus: (recordIndex: number, fieldKey: string) => void;
+  onAddEntry: () => void;
+  deleted: { entry: ListingEntry; index: number } | null;
+  onUndoDelete: () => void;
+  onDismissDeleted: () => void;
+  onFieldFocus: (recordIndex: number, fieldKey: FieldKey) => void;
   onSave: () => void;
+  onDownloadPdf: () => void;
   saving: boolean;
 }
 
-const ENTITY_TYPES = ["Individual", "Corporation", "LLC", "Partnership", "Trust", "Other"];
-
-const input: React.CSSProperties = {
-  width: "100%", padding: "5px 7px", border: "1px solid var(--border)",
-  borderRadius: 4, fontSize: 13, background: "white", boxSizing: "border-box",
+const cell: React.CSSProperties = {
+  padding: "3px 4px", border: "1px solid var(--border)",
+  borderRadius: 3, fontSize: 12, background: "white",
+  width: "100%", boxSizing: "border-box",
 };
 
 export function ListingForm({
-  extractions, entries, onEntryChange, onEntryConfirm,
-  onEntityNameChange, onEntityTypeChange, onDeleteEntry,
-  onFieldFocus, onSave, saving,
+  meta, onMetaChange, debtor, debtorConfidence, debtorConfirmed,
+  onDebtorChange, onDebtorConfirm, onDebtorFocus, partyLabel, onPartyLabelChange,
+  entries, onFieldChange, onRowConfirm, onDeleteEntry, onAddEntry, deleted, onUndoDelete, onDismissDeleted, onFieldFocus,
+  onSave, onDownloadPdf, saving,
 }: Props) {
-  const entityName = entries[0]?.entityName || "";
-  const entityType = entries[0]?.entityType || "";
-  const confirmed = entries.filter((e) => e.confirmed).length;
-  const allConfirmed = entries.length > 0 && confirmed === entries.length;
+  useEffect(() => {
+    if (!deleted) return;
+    const t = setTimeout(onDismissDeleted, 8000);
+    return () => clearTimeout(t);
+  }, [deleted]);
+
+  const confirmedRows = entries.filter(e => RECORD_FIELDS.every(k => e[k].confirmed)).length;
+  const totalItems = 1 + entries.length;
+  const confirmedItems = (debtorConfirmed ? 1 : 0) + confirmedRows;
+  const allConfirmed = totalItems > 0 && confirmedItems === totalItems;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--surface)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-      {/* Header */}
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", background: "#f1f5f9", borderRadius: "var(--radius) var(--radius) 0 0" }}>
-        <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Listing Fields</h3>
-        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-          {entries.length} record{entries.length !== 1 ? "s" : ""} extracted. Review and confirm each.
-        </p>
+      <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "#f1f5f9", borderRadius: "var(--radius) var(--radius) 0 0" }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600 }}>Listing Page</h3>
       </div>
 
-      {/* Content */}
-      <div style={{ flex: 1, overflow: "auto", padding: "12px 16px" }}>
-        {/* Shared debtor info */}
-        <div style={{ padding: "10px 12px", marginBottom: 12, border: "1px solid var(--border)", borderRadius: 6, background: "#f8fafc" }}>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted)", marginBottom: 8 }}>
-            Debtor Info (applies to all records)
+      <div style={{ flex: 1, overflow: "auto", padding: "10px 14px" }}>
+        <Section title="Project Info">
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+            <MetaField label="Prepared For" value={meta.preparedFor} onChange={v => onMetaChange("preparedFor", v)} />
+            <MetaField label="Client Matter #" value={meta.clientMatter} onChange={v => onMetaChange("clientMatter", v)} />
+            <MetaField label="Project #" value={meta.projectNumber} onChange={v => onMetaChange("projectNumber", v)} />
+            <MetaField label="Project Mgr" value={meta.projectMgr} onChange={v => onMetaChange("projectMgr", v)} />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 8 }}>
+        </Section>
+
+        <Section title="Search Info">
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 5 }}>
             <div>
-              <Label text="Entity Name" conf={extractions[0]?.entityName.confidence} />
-              <input value={entityName} onChange={(e) => onEntityNameChange(e.target.value)} onFocus={() => onFieldFocus(0, "entityName")} style={input} />
-            </div>
-            <div>
-              <Label text="Entity Type" conf={extractions[0]?.entityType.confidence} />
-              <select value={entityType} onChange={(e) => onEntityTypeChange(e.target.value)} onFocus={() => onFieldFocus(0, "entityType")} style={{ ...input, cursor: "pointer" }}>
-                {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-          </div>
-        </div>
-
-        {/* Records */}
-        <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted)", marginBottom: 8 }}>
-          Records ({entries.length})
-        </div>
-
-        {entries.map((entry, i) => {
-          const ext = extractions[i];
-          return (
-            <div key={entry.id} style={{
-              padding: "10px 12px", marginBottom: 8,
-              border: `1px solid ${entry.confirmed ? "var(--success)" : "var(--border)"}`,
-              borderRadius: 6, background: entry.confirmed ? "rgba(22,163,74,0.03)" : "white",
-              transition: "all 0.15s",
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>#{i + 1}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <button onClick={() => onDeleteEntry(i)} title="Remove" style={{
-                    width: 24, height: 24, border: "1px solid var(--border)", borderRadius: 4,
-                    background: "white", color: "var(--muted)", fontSize: 14,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                  }}>&times;</button>
-                  <button onClick={() => onEntryConfirm(i)} title={entry.confirmed ? "Confirmed" : "Click to confirm"} style={{
-                    width: 26, height: 26,
-                    border: `2px solid ${entry.confirmed ? "var(--success)" : "var(--border)"}`,
-                    borderRadius: "50%",
-                    background: entry.confirmed ? "var(--success)" : "white",
-                    color: entry.confirmed ? "white" : "var(--muted)",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 14, transition: "all 0.15s",
-                  }}>{entry.confirmed ? "✓" : ""}</button>
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                <Field label="File Date" value={entry.fileDate} conf={ext?.fileDate.confidence} onChange={(v) => onEntryChange(i, "fileDate", v)} onFocus={() => onFieldFocus(i, "fileDate")} />
-                <Field label="File/Case #" value={entry.fileNumber} conf={ext?.fileNumber.confidence} onChange={(v) => onEntryChange(i, "fileNumber", v)} onFocus={() => onFieldFocus(i, "fileNumber")} />
-                <Field label="File Type" value={entry.fileType} conf={ext?.fileType.confidence} onChange={(v) => onEntryChange(i, "fileType", v)} onFocus={() => onFieldFocus(i, "fileType")} />
-                <Field label="Secured Party" value={entry.securedParty} conf={ext?.securedParty.confidence} onChange={(v) => onEntryChange(i, "securedParty", v)} onFocus={() => onFieldFocus(i, "securedParty")} />
+              <FieldLabel text="Debtor" conf={debtorConfidence} confirmed={debtorConfirmed} />
+              <div style={{ display: "flex", gap: 4 }}>
+                <input value={debtor} onChange={e => onDebtorChange(e.target.value)} onFocus={onDebtorFocus} style={{ ...cell, borderColor: debtorConfirmed ? "var(--success)" : "var(--border)", fontWeight: 500 }} />
+                <Btn confirmed={debtorConfirmed} onClick={onDebtorConfirm} />
               </div>
             </div>
-          );
-        })}
+            <MetaField label="Jurisdiction" value={meta.jurisdiction} onChange={v => onMetaChange("jurisdiction", v)} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 60px", gap: 5 }}>
+              <MetaField label="Summary" value={meta.summary} onChange={v => onMetaChange("summary", v)} />
+              <MetaField label="Thru Date" value={meta.thruDate} onChange={v => onMetaChange("thruDate", v)} />
+              <MetaField label="Years" value={meta.yearsSearched} onChange={v => onMetaChange("yearsSearched", v)} />
+            </div>
+          </div>
+        </Section>
 
-        {entries.length === 0 && (
-          <div style={{ textAlign: "center", padding: 24, color: "var(--muted)", fontSize: 13 }}>No records extracted</div>
+        {deleted && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", marginBottom: 6, background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 6, fontSize: 12 }}>
+            <span>Record #{deleted.index + 1} deleted</span>
+            <button onClick={onUndoDelete} style={{ padding: "2px 10px", background: "white", border: "1px solid #f59e0b", borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Undo</button>
+          </div>
         )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <SectionTitle>Records ({entries.length})</SectionTitle>
+            <button onClick={onAddEntry} title="Add record" style={{ width: 20, height: 20, border: "1px solid var(--border)", borderRadius: 3, background: "white", color: "var(--primary)", fontSize: 14, fontWeight: 600, cursor: "pointer", lineHeight: "18px", padding: 0 }}>+</button>
+          </div>
+          <select value={partyLabel} onChange={e => onPartyLabelChange(e.target.value)} style={{ fontSize: 11, padding: "2px 4px", border: "1px solid var(--border)", borderRadius: 3, background: "white" }}>
+            {PARTY_LABELS.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+          <thead>
+            <tr style={{ borderBottom: "2px solid var(--border)" }}>
+              <th style={{ width: 20, ...th }}>#</th>
+              <th style={{ width: "18%", ...th }}>File Date</th>
+              <th style={{ width: "22%", ...th }}>File Number</th>
+              <th style={{ width: "14%", ...th }}>File Type</th>
+              <th style={{ ...th }}>{partyLabel}</th>
+              <th style={{ width: 50, ...th }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry, i) => {
+              const rowDone = RECORD_FIELDS.every(k => entry[k].confirmed);
+              return (
+                <tr key={entry.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td style={{ ...td, fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{i + 1}</td>
+                  {RECORD_FIELDS.map(key => (
+                    <td key={key} style={td}>
+                      <input
+                        value={entry[key].value}
+                        onChange={e => onFieldChange(i, key, e.target.value)}
+                        onFocus={() => onFieldFocus(i, key)}
+                        style={{ ...cell, borderColor: entry[key].confirmed ? "var(--success)" : "var(--border)" }}
+                      />
+                    </td>
+                  ))}
+                  <td style={{ ...td, whiteSpace: "nowrap" }}>
+                    <Btn confirmed={rowDone} onClick={() => onRowConfirm(i)} />
+                    <button onClick={() => onDeleteEntry(i)} title="Delete" style={{ width: 22, height: 22, border: "1px solid var(--border)", borderRadius: 3, background: "white", color: "var(--muted)", fontSize: 12, cursor: "pointer", marginLeft: 2, verticalAlign: "middle" }}>&times;</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {entries.length === 0 && <div style={{ textAlign: "center", padding: 20, color: "var(--muted)", fontSize: 13 }}>No records extracted</div>}
       </div>
 
-      {/* Footer */}
-      <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ fontSize: 12, textAlign: "center", color: allConfirmed ? "var(--success)" : "var(--muted)" }}>
-          {allConfirmed ? "All records confirmed" : `${confirmed} / ${entries.length} confirmed`}
+          {confirmedItems} / {totalItems} confirmed (debtor + {entries.length} records)
         </div>
-        <button
-          onClick={onSave}
-          disabled={saving || !allConfirmed}
-          title={allConfirmed ? undefined : "Confirm all records before saving"}
-          style={{
-            padding: 10, background: "var(--primary)", color: "white", border: "none",
-            borderRadius: 6, fontWeight: 500, opacity: saving || !allConfirmed ? 0.5 : 1,
-            cursor: saving || !allConfirmed ? "default" : "pointer",
-          }}
-        >
-          {saving ? "Saving..." : "Save Listing"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={onSave} disabled={saving || !allConfirmed}
+            title={allConfirmed ? undefined : "Confirm debtor and every record row"}
+            style={{ flex: 1, padding: 9, background: "var(--primary)", color: "white", border: "none", borderRadius: 6, fontWeight: 500, opacity: saving || !allConfirmed ? 0.5 : 1, cursor: saving || !allConfirmed ? "default" : "pointer" }}
+          >{saving ? "Saving..." : "Save Listing"}</button>
+          <button
+            onClick={onDownloadPdf}
+            style={{ padding: "9px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 6, fontWeight: 500, cursor: "pointer" }}
+          >PDF</button>
+        </div>
       </div>
     </div>
   );
 }
 
-function Label({ text, conf }: { text: string; conf?: number }) {
-  const color = !conf ? "var(--muted)" : conf > 0.9 ? "var(--success)" : conf > 0.7 ? "var(--warning)" : "var(--danger)";
+const th: React.CSSProperties = { textAlign: "left", padding: "4px 3px", fontSize: 11, color: "var(--muted)", fontWeight: 600 };
+const td: React.CSSProperties = { padding: "2px 2px", verticalAlign: "middle" };
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted)" }}>{children}</div>;
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ padding: "8px 10px", marginBottom: 10, border: "1px solid var(--border)", borderRadius: 6, background: "#f8fafc" }}>
+      <SectionTitle>{title}</SectionTitle>
+      <div style={{ marginTop: 6 }}>{children}</div>
+    </div>
+  );
+}
+
+function FieldLabel({ text, conf, confirmed }: { text: string; conf?: number; confirmed: boolean }) {
+  const color = confirmed ? "var(--success)" : !conf ? "var(--muted)" : conf > 0.9 ? "var(--success)" : conf > 0.7 ? "var(--warning)" : "var(--danger)";
   return (
     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
       <label style={{ fontSize: 11, color: "var(--muted)" }}>{text}</label>
-      {conf !== undefined && <span style={{ fontSize: 10, color }}>{Math.round(conf * 100)}%</span>}
+      <span style={{ fontSize: 10, color }}>{confirmed ? "confirmed" : conf !== undefined ? `${Math.round(conf * 100)}%` : ""}</span>
     </div>
   );
 }
 
-function Field({ label, value, conf, onChange, onFocus }: {
-  label: string; value: string; conf?: number;
-  onChange: (v: string) => void; onFocus: () => void;
-}) {
+function MetaField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
     <div>
-      <Label text={label} conf={conf} />
-      <input value={value} onChange={(e) => onChange(e.target.value)} onFocus={onFocus}
-        style={{ width: "100%", padding: "5px 7px", border: "1px solid var(--border)", borderRadius: 4, fontSize: 13, background: "white", boxSizing: "border-box" }} />
+      <label style={{ fontSize: 11, color: "var(--muted)", display: "block", marginBottom: 2 }}>{label}</label>
+      <input value={value} onChange={e => onChange(e.target.value)} style={{ ...cell, fontSize: 12 }} />
     </div>
+  );
+}
+
+function Btn({ confirmed, onClick }: { confirmed: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} title={confirmed ? "Unconfirm" : "Confirm"} style={{
+      width: 22, height: 22, border: `1px solid ${confirmed ? "var(--success)" : "var(--border)"}`,
+      borderRadius: 3, background: confirmed ? "var(--success)" : "white",
+      color: confirmed ? "white" : "var(--muted)", fontSize: 13, cursor: "pointer", verticalAlign: "middle",
+    }}>{confirmed ? "✓" : ""}</button>
   );
 }

@@ -1,9 +1,8 @@
-"""OCR layer — extracts text blocks with bounding boxes from a PDF.
+"""OCR layer: PDF -> text blocks with normalized bounding boxes.
 
-Swap providers by changing OCR_PROVIDER in .env.
-Each provider function takes a PDF path and returns a flat list of blocks:
-  [{"index": 0, "text": "...", "page": 0, "x": 0.1, "y": 0.2, "width": 0.5, "height": 0.02}, ...]
-Coordinates are normalized 0-1 fractions of page dimensions. Pages are 0-indexed.
+Provider contract:
+  run_ocr(path) returns (blocks, usage)
+  blocks are flat, ordered, and use 0-indexed page numbers with 0-1 coordinates.
 """
 
 import io
@@ -13,41 +12,42 @@ import boto3
 from pypdf import PdfReader, PdfWriter
 
 from config import settings
+from cost import estimate_ocr_cost
+from errors import AppError
 
 
-def run_ocr(pdf_path: str) -> list[dict]:
-    if settings.ocr_provider == "textract":
-        return _textract_ocr(pdf_path)
-    raise ValueError(f"Unknown OCR provider: {settings.ocr_provider}")
+def run_ocr(pdf_path: str) -> tuple[list[dict], dict]:
+    providers = {"textract": _textract_ocr}
+    provider = providers.get(settings.ocr_provider)
+    if not provider:
+        raise AppError("UNKNOWN_OCR_PROVIDER", f"Unknown OCR provider: {settings.ocr_provider}", 500)
+    return provider(pdf_path)
 
 
-def _textract_ocr(pdf_path: str) -> list[dict]:
+def _textract_ocr(pdf_path: str) -> tuple[list[dict], dict]:
     client = boto3.client("textract", region_name=settings.aws_region)
     reader = PdfReader(pdf_path)
-    page_count = min(len(reader.pages), settings.max_pages)
+    page_count = len(reader.pages)
 
+    # Textract sync APIs work page-by-page for PDFs sent as bytes.
     def process_page(page_idx: int) -> list[dict]:
         writer = PdfWriter()
         writer.add_page(reader.pages[page_idx])
         buf = io.BytesIO()
         writer.write(buf)
 
-        try:
-            resp = client.analyze_document(
-                Document={"Bytes": buf.getvalue()},
-                FeatureTypes=["TABLES"],
-            )
-        except Exception as e:
-            print(f"Textract failed on page {page_idx + 1}: {e}")
-            return []
+        resp = client.analyze_document(
+            Document={"Bytes": buf.getvalue()},
+            FeatureTypes=["TABLES"],
+        )
 
         blocks = []
-        for b in resp.get("Blocks", []):
-            if b["BlockType"] == "LINE" and b.get("Text"):
-                bb = b.get("Geometry", {}).get("BoundingBox", {})
+        for block in resp.get("Blocks", []):
+            if block.get("BlockType") == "LINE" and block.get("Text"):
+                bb = block.get("Geometry", {}).get("BoundingBox", {})
                 blocks.append({
                     "index": 0,
-                    "text": b["Text"],
+                    "text": block["Text"],
                     "page": page_idx,
                     "x": bb.get("Left", 0),
                     "y": bb.get("Top", 0),
@@ -56,16 +56,29 @@ def _textract_ocr(pdf_path: str) -> list[dict]:
                 })
         return blocks
 
+    # Pages run concurrently for speed, then get reassembled in page order below.
     results: dict[int, list[dict]] = {}
+    errors: list[dict] = []
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {pool.submit(process_page, i): i for i in range(page_count)}
         for future in as_completed(futures):
-            results[futures[future]] = future.result()
+            page_idx = futures[future]
+            try:
+                results[page_idx] = future.result()
+            except Exception as exc:
+                errors.append({"page": page_idx + 1, "message": str(exc)})
+
+    if errors:
+        raise AppError("OCR_PROVIDER_FAILED", "OCR failed on one or more pages.", 502, {"pages": errors})
 
     all_blocks: list[dict] = []
-    for i in range(page_count):
-        for block in results.get(i, []):
+    for page_idx in range(page_count):
+        for block in results.get(page_idx, []):
             block["index"] = len(all_blocks)
             all_blocks.append(block)
 
-    return all_blocks
+    # Empty OCR is a hard failure because downstream AI would guess from nothing.
+    if not all_blocks:
+        raise AppError("OCR_EMPTY_RESULT", "OCR completed but returned no readable text blocks.", 422)
+
+    return all_blocks, estimate_ocr_cost(page_count)
