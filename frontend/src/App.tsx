@@ -40,9 +40,9 @@ export function App() {
     : "#/";
 
   return (
-    <div style={{ minHeight: "100vh" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <div style={{
-        height: 60, background: "#9B1C1C", display: "flex", alignItems: "center",
+        height: 60, flexShrink: 0, background: "#9B1C1C", display: "flex", alignItems: "center",
         justifyContent: "space-between", padding: "0 28px",
       }}>
         <div
@@ -78,8 +78,21 @@ export function App() {
         )}
       </div>
 
-      <div style={{ background: "var(--bg)", padding: route.page === "review" ? "0" : "34px 0 46px", minHeight: "calc(100vh - 60px)", display: route.page === "review" ? "flex" : undefined, flexDirection: route.page === "review" ? "column" : undefined }}>
-        <div style={{ maxWidth: route.page === "review" ? 1500 : 1160, margin: route.page === "review" ? "auto" : "0 auto", padding: route.page === "review" ? "0 28px" : "0 48px", width: "100%" }}>
+      <div style={{
+        background: "var(--bg)",
+        padding: route.page === "review" ? 0 : "34px 0 46px",
+        flex: 1,
+        minHeight: 0,
+        overflow: route.page === "review" ? "hidden" : "auto",
+        display: route.page === "review" ? "flex" : undefined,
+      }}>
+        <div style={{
+          maxWidth: route.page === "review" ? 1500 : 1160,
+          margin: route.page === "review" ? "auto" : "0 auto",
+          padding: route.page === "review" ? 0 : "0 48px",
+          width: "100%",
+          height: route.page === "review" ? "100%" : undefined,
+        }}>
           {route.page === "projects" && (
             <ProjectsPage onOpenProject={(id) => navigate(`#/project/${id}`)} />
           )}

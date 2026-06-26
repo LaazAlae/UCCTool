@@ -306,21 +306,29 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
   }
 
   return (
-    <div style={{ padding: "24px 0 80px" }}>
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
-        <p style={{ fontSize: 13, color: "var(--muted)" }}>
-          {pageCount} page{pageCount !== 1 ? "s" : ""} &middot; {entries.length} record{entries.length !== 1 ? "s" : ""} found
-        </p>
+    <div style={{
+      height: "100%",
+      padding: "28px 28px 36px",
+      boxSizing: "border-box",
+      display: "grid",
+      gridTemplateRows: "auto minmax(0, 1fr)",
+      rowGap: 16,
+      minHeight: 0,
+    }}>
+      <div>
+          <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
+          <p style={{ fontSize: 13, color: "var(--muted)" }}>
+            {pageCount} page{pageCount !== 1 ? "s" : ""} &middot; {entries.length} record{entries.length !== 1 ? "s" : ""} found
+          </p>
       </div>
 
-      {error && (
-        <div style={{ padding: "8px 12px", background: "rgba(220,38,38,0.08)", color: "var(--danger)", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
-          {error}
-        </div>
-      )}
+        {error && (
+          <div style={{ padding: "8px 12px", background: "rgba(220,38,38,0.08)", color: "var(--danger)", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 20, height: 550 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 20, height: "100%", minHeight: 0 }}>
         <div style={{ background: "var(--surface)", borderRadius: "var(--radius)", border: "1px solid var(--border)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <PdfViewer jobId={jobId} pageCount={pageCount} highlights={highlights} onHighlightClick={handleHighlightClick} activeField={activeField} />
         </div>
@@ -349,8 +357,7 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
           onDownloadPdf={handleDownloadPdf}
           saving={saving}
         />
-      </div>
+        </div>
     </div>
   );
 }
-
