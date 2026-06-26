@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { api, RECORD_FIELDS, FIELD_KEYS } from "./api";
-import type { CostSummary, FieldKey, ListingEntry, ListingMeta } from "./api";
+import type { FieldKey, ListingEntry, ListingMeta } from "./api";
 import { PdfViewer } from "./PdfViewer";
 import type { Highlight } from "./PdfViewer";
 import { ListingForm } from "./ListingForm";
@@ -34,7 +34,6 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
   const [error, setError] = useState<string | null>(null);
   const [ocrBlocks, setOcrBlocks] = useState(0);
   const [entries, setEntries] = useState<ListingEntry[]>([]);
-  const [cost, setCost] = useState<CostSummary>({});
   const [saving, setSaving] = useState(false);
   const [activeField, setActiveField] = useState<string | null>(null);
   const [deleted, setDeleted] = useState<{ entry: ListingEntry; index: number } | null>(null);
@@ -69,8 +68,6 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
         setStage("extracting");
         const res = await api.extract(jobId);
         if (cancelled) return;
-        setCost(res.cost || {});
-
         const ext = res.extractions;
         setEntries(ext.map((e) => ({ id: crypto.randomUUID(), ...e })));
 
@@ -309,15 +306,12 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
   }
 
   return (
-    <div>
-      <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
-        <div>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
-          <p style={{ fontSize: 13, color: "var(--muted)" }}>
-            {pageCount} page{pageCount !== 1 ? "s" : ""} &middot; {entries.length} record{entries.length !== 1 ? "s" : ""} found
-          </p>
-        </div>
-        <CostPanel cost={cost} />
+    <div style={{ padding: "24px 0 80px" }}>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 600 }}>{fileName}</h2>
+        <p style={{ fontSize: 13, color: "var(--muted)" }}>
+          {pageCount} page{pageCount !== 1 ? "s" : ""} &middot; {entries.length} record{entries.length !== 1 ? "s" : ""} found
+        </p>
       </div>
 
       {error && (
@@ -326,7 +320,7 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 500px", gap: 16, height: "calc(100vh - 190px)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 20, height: 550 }}>
         <div style={{ background: "var(--surface)", borderRadius: "var(--radius)", border: "1px solid var(--border)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <PdfViewer jobId={jobId} pageCount={pageCount} highlights={highlights} onHighlightClick={handleHighlightClick} activeField={activeField} />
         </div>
@@ -360,19 +354,3 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
   );
 }
 
-function CostPanel({ cost }: { cost: CostSummary }) {
-  const total = cost.totalEstimatedCostUsd ?? ((cost.ocr?.estimatedCostUsd || 0) + (cost.ai?.estimatedCostUsd || 0));
-  return (
-    <div style={{ minWidth: 260, border: "1px solid var(--border)", borderRadius: 6, background: "var(--surface)", padding: "8px 10px", fontSize: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600, marginBottom: 4 }}>
-        <span>Estimated Job Cost</span>
-        <span>${total.toFixed(4)}</span>
-      </div>
-      <div style={{ color: "var(--muted)", display: "grid", gap: 2 }}>
-        <span>OCR: ${Number(cost.ocr?.estimatedCostUsd || 0).toFixed(4)} {cost.ocr?.pages ? `(${cost.ocr.pages} pages)` : ""}</span>
-        <span>AI: ${Number(cost.ai?.estimatedCostUsd || 0).toFixed(4)} {cost.ai?.inputTokens ? `(${cost.ai.inputTokens.toLocaleString()} in · ${(cost.ai.outputTokens || 0).toLocaleString()} out)` : ""}</span>
-        {cost.maxJobCostUsd !== undefined && <span>Job cap: ${cost.maxJobCostUsd.toFixed(2)}</span>}
-      </div>
-    </div>
-  );
-}

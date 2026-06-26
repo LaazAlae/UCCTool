@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import type { Evidence, Project } from "./api";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
 interface Props {
   projectId: string;
@@ -16,14 +20,12 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [compiling, setCompiling] = useState(false);
 
-  // Upload state
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [resultType, setResultType] = useState<"Records Found" | "No Records" | "">("");
   const [uploading, setUploading] = useState(false);
+  const [uploadPageCount, setUploadPageCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-
-  // Drag state
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
@@ -44,7 +46,7 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   }
 
   async function handleUpload() {
-    if (!uploadFile) return;
+    if (!uploadFile || !resultType) return;
     setUploading(true);
     setError(null);
     try {
@@ -63,6 +65,17 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
     }
   }
 
+  async function handleFileSelect(file: File | null) {
+    setUploadFile(file);
+    setUploadPageCount(0);
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const doc = await pdfjsLib.getDocument(new Uint8Array(buf)).promise;
+      setUploadPageCount(doc.numPages);
+      doc.destroy();
+    } catch {}
+  }
 
   async function handleDelete(jobId: string) {
     try {
@@ -88,10 +101,7 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
       await api.toggleInclude(projectId, jobId, included);
       setProject((prev) => {
         if (!prev) return prev;
-        return {
-          ...prev,
-          evidence: prev.evidence.map((e) => e.id === jobId ? { ...e, included } : e),
-        };
+        return { ...prev, evidence: prev.evidence.map((e) => e.id === jobId ? { ...e, included } : e) };
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Toggle failed");
@@ -111,15 +121,8 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
     }
   }
 
-  // Drag & drop reorder
-  function handleDragStart(idx: number) {
-    setDragIdx(idx);
-  }
-
-  function handleDragOver(e: React.DragEvent, idx: number) {
-    e.preventDefault();
-    setDragOverIdx(idx);
-  }
+  function handleDragStart(idx: number) { setDragIdx(idx); }
+  function handleDragOver(e: React.DragEvent, idx: number) { e.preventDefault(); setDragOverIdx(idx); }
 
   async function handleDrop(idx: number) {
     if (dragIdx === null || !project) return;
@@ -157,197 +160,314 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const includedCount = evidence.filter((e) => e.included).length;
 
   return (
-    <div style={{ maxWidth: 800, margin: "0 auto" }}>
-      {/* Project header */}
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700 }}>{project.name}</h2>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-          {project.preparedFor && <span>{project.preparedFor.split("\n")[0]} · </span>}
-          {project.clientMatter && <span>Matter #{project.clientMatter} · </span>}
-          {evidence.length} evidence
+    <div>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 25, fontWeight: 800, color: "var(--text)", letterSpacing: "-0.02em" }}>{project.name}</div>
+        <div style={{ marginTop: 6, fontSize: 13.5, color: "var(--text-secondary)" }}>
+          {project.preparedFor && <>{project.preparedFor.split("\n")[0]} &nbsp;&middot;&nbsp; </>}
+          {project.clientMatter && <>Matter <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>#{project.clientMatter}</span> &nbsp;&middot;&nbsp; </>}
+          {evidence.length} evidence item{evidence.length !== 1 ? "s" : ""}
         </div>
       </div>
 
       {error && (
-        <div style={{ padding: "8px 12px", background: "rgba(220,38,38,0.08)", color: "var(--danger)", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
+        <div style={{ padding: "10px 14px", background: "var(--danger-bg)", color: "var(--danger)", borderRadius: 8, fontSize: 13, marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           {error}
-          <button onClick={() => setError(null)} style={{ float: "right", background: "none", border: "none", color: "var(--danger)", cursor: "pointer" }}>x</button>
+          <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "var(--danger)", fontSize: 16, padding: "0 4px" }}>x</button>
         </div>
       )}
 
-      {/* Action bar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <button onClick={() => { setShowUpload(!showUpload); setResultType(""); setUploadFile(null); }} style={btnStyle}>
-          {showUpload ? "Cancel Upload" : "Upload Evidence"}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: showUpload ? 18 : 24 }}>
+        <button
+          onClick={() => { setShowUpload(!showUpload); setResultType(""); setUploadFile(null); setUploadPageCount(0); }}
+          style={{
+            background: showUpload ? "var(--primary-hover)" : "var(--primary)", color: "#fff",
+            fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
+            display: "flex", alignItems: "center", gap: 8,
+            boxShadow: showUpload ? "0 0 0 3px rgba(155,28,28,0.16)" : "var(--shadow-btn)",
+          }}
+        >
+          {showUpload ? (
+            <>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              Close Upload
+            </>
+          ) : (
+            <>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>
+              Upload Evidence
+            </>
+          )}
         </button>
         <button
           onClick={handleCompile}
           disabled={compiling || includedCount === 0}
           style={{
-            ...btnStyle,
-            background: compiling || includedCount === 0 ? "var(--border)" : "var(--success)",
-            color: "white", borderColor: "transparent",
+            background: compiling || includedCount === 0 ? "var(--border)" : "var(--success)", color: "#fff",
+            fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
+            display: "flex", alignItems: "center", gap: 8,
+            boxShadow: compiling || includedCount === 0 ? "none" : "0 4px 12px rgba(21,128,61,0.20)",
             opacity: compiling || includedCount === 0 ? 0.6 : 1,
           }}
         >
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
           {compiling ? "Compiling..." : `Compile Report (${includedCount})`}
         </button>
-        <button onClick={handleShowTrash} style={{ ...btnStyle, marginLeft: "auto" }}>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={handleShowTrash}
+          style={{
+            background: showTrash ? "var(--primary-bg)" : "#fff",
+            color: showTrash ? "var(--primary)" : "var(--text-secondary)",
+            fontWeight: showTrash ? 700 : 600, fontSize: 14, padding: "11px 16px",
+            border: showTrash ? "1px solid #F0CFCF" : "1px solid var(--border-light)",
+            borderRadius: 10, display: "flex", alignItems: "center", gap: 8,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={showTrash ? "#9B1C1C" : "#9A948D"} strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
           {showTrash ? "Hide Trash" : "Trash"}
         </button>
       </div>
 
-      {/* Upload panel */}
       {showUpload && (
-        <div style={{ padding: 16, marginBottom: 16, border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface)" }}>
-          <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+        <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 14, padding: 24, marginBottom: 26, boxShadow: "0 2px 10px rgba(20,18,16,0.04)" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", marginBottom: 18 }}>Upload new evidence</div>
+
+          <div style={{ display: "flex", gap: 22, alignItems: "flex-end" }}>
             <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>PDF File</label>
-              <input ref={inputRef} type="file" accept=".pdf" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} style={{ fontSize: 13 }} />
+              <label style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.08em", marginBottom: 7 }}>PDF FILE</label>
+              <input ref={inputRef} type="file" accept=".pdf" onChange={(e) => handleFileSelect(e.target.files?.[0] || null)} style={{ display: "none" }} />
+              <button
+                onClick={() => inputRef.current?.click()}
+                style={{
+                  width: "100%", height: 46, padding: "0 16px",
+                  border: uploadFile ? "1.5px solid var(--primary)" : "1.5px dashed var(--border-light)",
+                  borderRadius: 10, background: uploadFile ? "var(--primary-bg)" : "#FAFAF9",
+                  fontSize: 14, fontWeight: 500, color: uploadFile ? "var(--text)" : "var(--muted)",
+                  display: "flex", alignItems: "center", gap: 10, textAlign: "left", cursor: "pointer",
+                  transition: "border-color 0.15s, background 0.15s",
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={uploadFile ? "#9B1C1C" : "#9A948D"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                </svg>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {uploadFile ? uploadFile.name : "Choose PDF file..."}
+                </span>
+              </button>
             </div>
             <div>
-              <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>Result</label>
-              <select value={resultType} onChange={(e) => setResultType(e.target.value as "Records Found" | "No Records" | "")} style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: 5, fontSize: 13 }}>
+              <label style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.08em", marginBottom: 7 }}>FILE TYPE</label>
+              <select value={resultType} onChange={(e) => setResultType(e.target.value as typeof resultType)}
+                style={{
+                  height: 46, padding: "0 14px", border: "1.5px solid var(--border-light)",
+                  borderRadius: 10, background: "#fff", fontSize: 14, fontWeight: 500,
+                  color: resultType ? "var(--text)" : "var(--muted)", minWidth: 200,
+                }}
+              >
                 <option value="" disabled>Select type...</option>
                 <option value="Records Found">Records Found</option>
                 <option value="No Records">No Records</option>
               </select>
             </div>
+          </div>
+
+          {uploadPageCount > 0 && (
+            <div style={{ marginTop: 14, fontSize: 13, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{
+                background: "var(--primary-bg)", color: "var(--primary)", fontSize: 12, fontWeight: 700,
+                padding: "3px 10px", borderRadius: 6,
+              }}>
+                {uploadPageCount} page{uploadPageCount !== 1 ? "s" : ""}
+              </span>
+              {resultType === "Records Found" && (
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                  Est. cost ~${(uploadPageCount * 0.02).toFixed(2)}
+                </span>
+              )}
+            </div>
+          )}
+
+          <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid #ECEAE6", display: "flex", justifyContent: "flex-end" }}>
             <button
               onClick={handleUpload}
               disabled={uploading || !uploadFile || !resultType}
               style={{
-                padding: "8px 20px", background: "var(--primary)", color: "white",
-                border: "none", borderRadius: 6, fontWeight: 500,
+                background: "#9B1C1C", color: "#fff", fontWeight: 700, fontSize: 14.5,
+                padding: "12px 28px", border: "none", borderRadius: 10,
+                display: "flex", alignItems: "center", gap: 9,
+                boxShadow: "0 6px 16px rgba(155,28,28,0.22)",
                 opacity: uploading || !uploadFile || !resultType ? 0.5 : 1,
-                cursor: uploading || !uploadFile || !resultType ? "default" : "pointer",
               }}
             >
-              {uploading ? "Uploading..." : "Upload"}
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>
+              {uploading ? "Uploading..." : "Upload & Process"}
             </button>
           </div>
         </div>
       )}
 
-      {/* Evidence list */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11, padding: "0 2px" }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.10em" }}>EVIDENCE</div>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>{includedCount} of {evidence.length} included in report</div>
+      </div>
+
       {evidence.length === 0 ? (
-        <div style={{ textAlign: "center", padding: 50, color: "var(--muted)", border: "1px dashed var(--border)", borderRadius: 8 }}>
-          <p style={{ fontSize: 14, marginBottom: 4 }}>No evidence yet</p>
-          <p style={{ fontSize: 12 }}>Upload evidence PDFs to get started</p>
+        <div style={{ border: "1.5px dashed var(--border-light)", borderRadius: 12, padding: 40, textAlign: "center" }}>
+          <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 4 }}>No evidence yet</p>
+          <p style={{ fontSize: 12, color: "var(--muted-light)" }}>Upload evidence PDFs to get started</p>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 6 }}>
-          {evidence.map((e, idx) => (
-            <div
-              key={e.id}
-              draggable
-              onDragStart={() => handleDragStart(idx)}
-              onDragOver={(ev) => handleDragOver(ev, idx)}
-              onDrop={() => handleDrop(idx)}
-              onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "10px 14px",
-                border: `1px solid ${dragOverIdx === idx ? "var(--primary)" : "var(--border)"}`,
-                borderRadius: 8, background: "var(--surface)",
-                opacity: dragIdx === idx ? 0.5 : 1,
-                transition: "border-color 0.1s, opacity 0.1s",
-              }}
-            >
-              {/* Drag handle */}
-              <div style={{ cursor: "grab", color: "var(--muted)", fontSize: 16, lineHeight: 1, userSelect: "none", padding: "0 4px" }} title="Drag to reorder">
-                ≡
-              </div>
-
-              {/* Info */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+          {evidence.map((e, idx) => {
+            const needsReview = e.resultType === "Records Found" && !e.hasListing;
+            const isRecords = e.resultType === "Records Found";
+            return (
               <div
-                style={{ flex: 1, cursor: "pointer", minWidth: 0 }}
-                onClick={() => {
-                  if (e.resultType === "Records Found" && !e.hasListing) {
-                    onReview(e.id, e.fileName, e.pageCount);
-                  } else {
-                    window.open(`/api/evidence/${e.id}/view`, "_blank");
-                  }
+                key={e.id}
+                draggable
+                onDragStart={() => handleDragStart(idx)}
+                onDragOver={(ev) => handleDragOver(ev, idx)}
+                onDrop={() => handleDrop(idx)}
+                onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 14,
+                  padding: "15px 16px 15px 14px",
+                  background: "#fff",
+                  border: dragOverIdx === idx ? "1.5px solid var(--primary)" : "1px solid var(--border)",
+                  borderRadius: 12, opacity: dragIdx === idx ? 0.5 : 1,
+                  transition: "border-color 0.1s, opacity 0.1s",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>
-                    {e.debtor || e.fileName}
-                  </span>
-                  <span style={{
-                    fontSize: 10, padding: "1px 6px", borderRadius: 3, fontWeight: 600,
-                    background: e.resultType === "Records Found" ? "rgba(22,163,74,0.1)" : "rgba(107,114,128,0.1)",
-                    color: e.resultType === "Records Found" ? "var(--success)" : "var(--muted)",
-                  }}>
-                    {e.resultType === "Records Found" ? `${e.recordCount} record${e.recordCount !== 1 ? "s" : ""}` : "No Records"}
-                  </span>
-                  {e.resultType === "Records Found" && !e.hasListing && (
-                    <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontWeight: 600, background: "rgba(220,38,38,0.1)", color: "var(--danger)" }}>
-                      Needs Review
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#CBC5BD" strokeWidth="2" strokeLinecap="round" style={{ cursor: "grab", flexShrink: 0 }}><path d="M5 8h14M5 12h14M5 16h14"/></svg>
+
+                <div
+                  style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
+                  onClick={() => {
+                    if (needsReview) onReview(e.id, e.fileName, e.pageCount);
+                    else window.open(`/api/evidence/${e.id}/view`, "_blank");
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <span style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>
+                      {e.debtor || e.fileName}
                     </span>
+                    {isRecords ? (
+                      <span style={{ background: "var(--success-bg)", color: "var(--success)", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                        {e.recordCount} record{e.recordCount !== 1 ? "s" : ""}
+                      </span>
+                    ) : (
+                      <span style={{ background: "#EFEEEC", color: "#7A756F", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                        No Records
+                      </span>
+                    )}
+                    {needsReview && (
+                      <span style={{
+                        background: "var(--danger-bg)", color: "var(--danger)", fontSize: 11, fontWeight: 700,
+                        padding: "2px 8px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4,
+                      }}>
+                        <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
+                        Needs Review
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--muted)" }}>
+                    {e.searchType && <>{e.searchType} &middot; </>}
+                    {e.jurisdiction && <>{e.jurisdiction} &middot; </>}
+                    {e.thruDate && <>Thru {e.thruDate} &middot; </>}
+                    {e.createdAt ? `Uploaded ${new Date(e.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                  </div>
+                </div>
+
+                {needsReview ? (
+                  <button
+                    onClick={() => onReview(e.id, e.fileName, e.pageCount)}
+                    style={{
+                      background: "#9B1C1C", color: "#fff", fontWeight: 700, fontSize: 12.5,
+                      padding: "7px 12px", border: "none", borderRadius: 8,
+                      display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+                    }}
+                  >
+                    Review
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => window.open(`/api/evidence/${e.id}/view`, "_blank")}
+                    style={{
+                      background: "#fff", color: "var(--text-secondary)", fontWeight: 600, fontSize: 12.5,
+                      padding: "7px 12px", border: "1px solid var(--border)", borderRadius: 8,
+                      display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+                    }}
+                  >
+                    Open
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 5h5v5M19 5l-7 7M11 5H6a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => handleDelete(e.id)}
+                  title="Move to trash"
+                  style={{
+                    width: 34, height: 34, border: "1px solid var(--border)", borderRadius: 8,
+                    background: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
+
+                <div
+                  onClick={() => handleToggleInclude(e.id, !e.included)}
+                  style={{
+                    width: 24, height: 24, borderRadius: 7, flexShrink: 0, cursor: "pointer",
+                    background: e.included ? "#9B1C1C" : "#fff",
+                    border: e.included ? "none" : "1.5px solid var(--border-light)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  {e.included && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                  {e.searchType && <span>{e.searchType} · </span>}
-                  {e.jurisdiction && <span>{e.jurisdiction} · </span>}
-                  {e.thruDate && <span>{e.thruDate} · </span>}
-                  {new Date(e.createdAt).toLocaleDateString()}
-                </div>
               </div>
-
-              {/* Delete */}
-              <button
-                onClick={() => handleDelete(e.id)}
-                title="Move to trash"
-                style={{
-                  width: 28, height: 28, border: "1px solid var(--border)", borderRadius: 5,
-                  background: "white", color: "var(--muted)", fontSize: 14, cursor: "pointer",
-                }}
-              >
-                ×
-              </button>
-
-              {/* Include checkbox */}
-              <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={e.included}
-                  onChange={(ev) => handleToggleInclude(e.id, ev.target.checked)}
-                  style={{ width: 18, height: 18, cursor: "pointer" }}
-                />
-              </label>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      {/* Trash panel */}
       {showTrash && (
-        <div style={{ marginTop: 20 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: "var(--muted)" }}>Trash</h3>
+        <div style={{ marginTop: 34 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "0 2px" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.10em" }}>TRASH</div>
+            <span style={{ fontSize: 11, color: "var(--muted-light)" }}>&middot; deleted items are kept permanently</span>
+          </div>
           {trash.length === 0 ? (
-            <p style={{ fontSize: 13, color: "var(--muted)", padding: 16, textAlign: "center" }}>Trash is empty</p>
+            <p style={{ fontSize: 13, color: "var(--muted)", padding: 20, textAlign: "center" }}>Trash is empty</p>
           ) : (
-            <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               {trash.map((e) => (
                 <div key={e.id} style={{
-                  display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                  border: "1px dashed var(--border)", borderRadius: 8, background: "#f9fafb", opacity: 0.7,
+                  display: "flex", alignItems: "center", gap: 14, padding: "14px 16px",
+                  background: "#FAF9F7", border: "1px dashed #D9D5CF", borderRadius: 12,
                 }}>
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: 13 }}>{e.debtor || e.fileName}</span>
-                    <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>
-                      {e.searchType} · Deleted {e.deletedAt ? new Date(e.deletedAt).toLocaleDateString() : ""}
-                    </span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#BCB6AE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: "#8A857E", textDecoration: "line-through" }}>{e.debtor || e.fileName}</div>
+                    <div style={{ marginTop: 3, fontSize: 12, color: "var(--muted-light)" }}>
+                      Deleted {e.deletedAt ? new Date(e.deletedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : ""}
+                    </div>
                   </div>
                   <button
                     onClick={() => handleRestore(e.id)}
                     style={{
-                      padding: "4px 14px", background: "white", color: "var(--primary)",
-                      border: "1px solid var(--primary)", borderRadius: 5, fontSize: 12,
-                      fontWeight: 500, cursor: "pointer",
+                      background: "#fff", color: "#9B1C1C", fontWeight: 700, fontSize: 13,
+                      padding: "8px 16px", border: "1px solid #E5DAD3", borderRadius: 9,
+                      display: "flex", alignItems: "center", gap: 7,
                     }}
                   >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9B1C1C" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 109-9 9 9 0 00-7 3.3M3 4v4h4"/></svg>
                     Restore
                   </button>
                 </div>
@@ -359,10 +479,3 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
     </div>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  padding: "8px 16px", background: "white", color: "var(--text)",
-  border: "1px solid var(--border)", borderRadius: 6, fontWeight: 500,
-  fontSize: 13, cursor: "pointer",
-};
-

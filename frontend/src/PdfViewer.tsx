@@ -31,6 +31,35 @@ interface Props {
 
 const PAD = 0.008;
 
+interface LabelPos { top: number; left: number }
+
+function resolveLabels(hl: Highlight[], dw: number, dh: number): Map<string, LabelPos> {
+  const LH = 16, CW = 5.5, GAP = 2;
+  interface R { fk: string; x: number; y: number; w: number; h: number; by: number; bh: number }
+  const rs: R[] = hl.map((h) => {
+    const bx = Math.max(0, h.boundingBox.x - PAD) * dw;
+    const by = Math.max(0, h.boundingBox.y - PAD) * dh;
+    const bh = (h.boundingBox.height + PAD * 2) * dh;
+    return { fk: h.fieldKey, x: bx, y: by - LH, w: h.label.length * CW + 12, h: LH, by, bh };
+  });
+  rs.sort((a, b) => a.by - b.by);
+  const placed: R[] = [];
+  for (const r of rs) {
+    let tries = 0;
+    while (tries < 8) {
+      const hit = placed.find(p => r.x < p.x + p.w && r.x + r.w > p.x && r.y < p.y + p.h && r.y + r.h > p.y);
+      if (!hit) break;
+      r.y = hit.y - LH - GAP;
+      tries++;
+    }
+    if (r.y < 0) r.y = r.by + r.bh + GAP;
+    placed.push(r);
+  }
+  const m = new Map<string, LabelPos>();
+  for (const r of rs) m.set(r.fk, { top: r.y - r.by, left: 0 });
+  return m;
+}
+
 export function PdfViewer({ jobId, pageCount, highlights, onHighlightClick, activeField }: Props) {
   const [pages, setPages] = useState<RenderedPage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -126,44 +155,47 @@ export function PdfViewer({ jobId, pageCount, highlights, onHighlightClick, acti
               </div>
               <div ref={(el) => mountCanvas(pg.pageIndex, el)} style={{ position: "relative" }} />
 
-              {pageHL.map((h) => {
-                // Textract boxes are normalized 0-1; convert them to rendered page pixels.
+              {(() => {
                 const dw = containerRef.current ? containerRef.current.clientWidth - 32 : pg.width;
                 const dh = dw * (pg.pdfHeight / pg.pdfWidth);
-                const isActive = activeField ? h.fieldKey.split(",").includes(activeField) : false;
-                const color = h.confirmed ? "rgba(22,163,74," : "rgba(220,38,38,";
-
-                return (
-                  <div
-                    key={h.fieldKey}
-                    ref={(el) => { if (el) highlightRefs.current.set(h.fieldKey, el); }}
-                    onClick={() => onHighlightClick(h.fieldKey)}
-                    title={h.label}
-                    style={{
-                      position: "absolute",
-                      left: `${Math.max(0, h.boundingBox.x - PAD) * dw}px`,
-                      top: `${Math.max(0, h.boundingBox.y - PAD) * dh}px`,
-                      width: `${(h.boundingBox.width + PAD * 2) * dw}px`,
-                      height: `${(h.boundingBox.height + PAD * 2) * dh}px`,
-                      background: `${color}${h.confirmed ? "0.08" : "0.06"})`,
-                      borderRadius: 3,
-                      cursor: "pointer",
-                      transition: "all 0.15s",
-                      outline: isActive ? `2px solid ${color}0.6)` : "none",
-                      outlineOffset: 2,
-                      zIndex: isActive ? 10 : 1,
-                    }}
-                  >
-                    <span style={{
-                      position: "absolute", top: -16, left: 0, fontSize: 9, fontWeight: 600,
-                      color: "white", background: `${color}0.7)`, padding: "1px 5px",
-                      borderRadius: "3px 3px 0 0", whiteSpace: "nowrap",
-                    }}>
-                      {h.label}
-                    </span>
-                  </div>
-                );
-              })}
+                const lps = resolveLabels(pageHL, dw, dh);
+                return pageHL.map((h) => {
+                  const isActive = activeField ? h.fieldKey.split(",").includes(activeField) : false;
+                  const color = h.confirmed ? "rgba(22,163,74," : "rgba(220,38,38,";
+                  const lp = lps.get(h.fieldKey) || { top: -16, left: 0 };
+                  const below = lp.top > 0;
+                  return (
+                    <div
+                      key={h.fieldKey}
+                      ref={(el) => { if (el) highlightRefs.current.set(h.fieldKey, el); }}
+                      onClick={() => onHighlightClick(h.fieldKey)}
+                      title={h.label}
+                      style={{
+                        position: "absolute",
+                        left: `${Math.max(0, h.boundingBox.x - PAD) * dw}px`,
+                        top: `${Math.max(0, h.boundingBox.y - PAD) * dh}px`,
+                        width: `${(h.boundingBox.width + PAD * 2) * dw}px`,
+                        height: `${(h.boundingBox.height + PAD * 2) * dh}px`,
+                        background: `${color}${h.confirmed ? "0.08" : "0.06"})`,
+                        borderRadius: 3,
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                        outline: isActive ? `2px solid ${color}0.6)` : "none",
+                        outlineOffset: 2,
+                        zIndex: isActive ? 10 : 1,
+                      }}
+                    >
+                      <span style={{
+                        position: "absolute", top: lp.top, left: lp.left, fontSize: 9, fontWeight: 600,
+                        color: "white", background: `${color}0.7)`, padding: "1px 5px",
+                        borderRadius: below ? "0 0 3px 3px" : "3px 3px 0 0", whiteSpace: "nowrap",
+                      }}>
+                        {h.label}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           );
         })}

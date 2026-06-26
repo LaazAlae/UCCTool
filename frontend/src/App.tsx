@@ -34,54 +34,77 @@ export function App() {
     window.location.hash = hash;
   }
 
+  const backLabel = route.page === "review" ? "Back to Project" : "All Projects";
+  const backTarget = route.page === "review" && "projectId" in route
+    ? `#/project/${route.projectId}`
+    : "#/";
+
   return (
-    <div style={{ maxWidth: 1400, margin: "0 auto", padding: "20px 24px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <h1
+    <div style={{ minHeight: "100vh" }}>
+      <div style={{
+        height: 60, background: "#9B1C1C", display: "flex", alignItems: "center",
+        justifyContent: "space-between", padding: "0 28px",
+      }}>
+        <div
           onClick={() => navigate("#/")}
-          style={{ fontSize: 18, fontWeight: 700, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 13, cursor: "pointer" }}
         >
-          UCC Reporting Tool
-        </h1>
+          <img src="/ucs-logo.png" alt="UCS" style={{ height: 34, width: 34, objectFit: "contain" }} />
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1 }}>
+            <div style={{ color: "#fff", fontWeight: 800, fontSize: 18, letterSpacing: "-0.01em" }}>
+              UCC Reporting Tool
+            </div>
+            <div style={{
+              color: "#F0B9B9", fontWeight: 600, fontSize: 10.5,
+              letterSpacing: "0.16em", marginTop: 5,
+            }}>
+              UCC MADE FASTER
+            </div>
+          </div>
+        </div>
+
         {route.page !== "projects" && (
           <button
-            onClick={() => {
-              if (route.page === "review") navigate(`#/project/${route.projectId}`);
-              else navigate("#/");
-            }}
+            onClick={() => navigate(backTarget)}
             style={{
-              fontSize: 13, color: "var(--muted)", background: "none",
-              border: "1px solid var(--border)", borderRadius: 6, padding: "4px 12px",
+              background: "rgba(255,255,255,0.10)", border: "1px solid rgba(255,255,255,0.34)",
+              color: "#fff", fontWeight: 600, fontSize: 13, padding: "8px 15px 8px 12px",
+              borderRadius: 9, display: "flex", alignItems: "center", gap: 7,
             }}
           >
-            {route.page === "review" ? "Back to Project" : "All Projects"}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+            {backLabel}
           </button>
         )}
       </div>
 
-      {route.page === "projects" && (
-        <ProjectsPage onOpenProject={(id) => navigate(`#/project/${id}`)} />
-      )}
+      <div style={{ background: "var(--bg)", padding: route.page === "review" ? "0" : "34px 0 46px", minHeight: "calc(100vh - 60px)", display: route.page === "review" ? "flex" : undefined, flexDirection: route.page === "review" ? "column" : undefined }}>
+        <div style={{ maxWidth: route.page === "review" ? 1500 : 1160, margin: route.page === "review" ? "auto" : "0 auto", padding: route.page === "review" ? "0 28px" : "0 48px", width: "100%" }}>
+          {route.page === "projects" && (
+            <ProjectsPage onOpenProject={(id) => navigate(`#/project/${id}`)} />
+          )}
 
-      {route.page === "project" && (
-        <ProjectDetailPage
-          projectId={route.projectId}
-          onReview={(jobId, fileName, pageCount) => {
-            navigate(`#/project/${route.projectId}/review/${jobId}`);
-            setRoute({ page: "review", projectId: route.projectId, jobId, fileName, pageCount });
-          }}
-        />
-      )}
+          {route.page === "project" && (
+            <ProjectDetailPage
+              projectId={route.projectId}
+              onReview={(jobId, fileName, pageCount) => {
+                navigate(`#/project/${route.projectId}/review/${jobId}`);
+                setRoute({ page: "review", projectId: route.projectId, jobId, fileName, pageCount });
+              }}
+            />
+          )}
 
-      {route.page === "review" && (
-        <ReviewPage
-          jobId={route.jobId}
-          fileName={route.fileName}
-          pageCount={route.pageCount}
-          projectId={route.projectId}
-          onDone={() => navigate(`#/project/${route.projectId}`)}
-        />
-      )}
+          {route.page === "review" && (
+            <ReviewPage
+              jobId={route.jobId}
+              fileName={route.fileName}
+              pageCount={route.pageCount}
+              projectId={route.projectId}
+              onDone={() => navigate(`#/project/${route.projectId}`)}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,26 +1,45 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #f8f9fa;
+  --bg: #F6F5F3;
   --surface: #ffffff;
-  --border: #dee2e6;
-  --text: #212529;
-  --muted: #6c757d;
-  --primary: #2563eb;
-  --danger: #dc2626;
-  --success: #16a34a;
-  --warning: #f59e0b;
-  --radius: 8px;
+  --border: #E5E2DD;
+  --border-light: #DCD8D2;
+  --text: #1C1A19;
+  --text-secondary: #6B6660;
+  --muted: #94908A;
+  --muted-light: #B4AFA8;
+  --primary: #9B1C1C;
+  --primary-hover: #7F1717;
+  --primary-bg: #FBECEC;
+  --primary-light: #F0B9B9;
+  --danger: #B91C1C;
+  --danger-bg: #FCEAEA;
+  --success: #15803D;
+  --success-bg: #E7F4EC;
+  --warning: #9A7B2E;
+  --warning-bg: #F4F0E8;
+  --radius: 12px;
+  --shadow-sm: 0 1px 2px rgba(20,18,16,0.04);
+  --shadow: 0 1px 3px rgba(20,18,16,0.10), 0 8px 30px rgba(20,18,16,0.05);
+  --shadow-btn: 0 4px 12px rgba(155,28,28,0.20);
 }
 
+html { overscroll-behavior: none; }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: 'Public Sans', system-ui, -apple-system, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-button { cursor: pointer; font-family: inherit; font-size: inherit; }
-input, select, textarea { font-family: inherit; font-size: inherit; }
+::selection { background: #9B1C1C; color: #fff; }
+
+button { cursor: pointer; font-family: inherit; }
+input, select, textarea { font-family: inherit; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes feedIn { 0% { opacity: 0; transform: translateY(6px); } 100% { opacity: 1; transform: translateY(0); } }
