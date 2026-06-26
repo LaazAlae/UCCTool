@@ -23,11 +23,13 @@ interface Props {
   jobId: string;
   fileName: string;
   pageCount: number;
+  projectId?: string;
+  onDone?: () => void;
 }
 
 type Stage = "ocr" | "extracting" | "reviewing" | "error";
 
-export function ReviewPage({ jobId, fileName, pageCount }: Props) {
+export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageCount, projectId, onDone }: Props) {
   const [stage, setStage] = useState<Stage>("ocr");
   const [error, setError] = useState<string | null>(null);
   const [ocrBlocks, setOcrBlocks] = useState(0);
@@ -36,6 +38,8 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
   const [saving, setSaving] = useState(false);
   const [activeField, setActiveField] = useState<string | null>(null);
   const [deleted, setDeleted] = useState<{ entry: ListingEntry; index: number } | null>(null);
+  const [pageCount, setPageCount] = useState(initPageCount);
+  const [fileName, setFileName] = useState(initFileName);
 
   const [meta, setMeta] = useState<ListingMeta>({ ...DEFAULT_META });
   const [debtor, setDebtor] = useState("");
@@ -50,6 +54,13 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
       try {
         setStage("ocr");
         setError(null);
+
+        if (!initPageCount || !initFileName) {
+          const jobInfo = await api.getJob(jobId);
+          if (cancelled) return;
+          setPageCount(jobInfo.pageCount);
+          setFileName(jobInfo.fileName);
+        }
 
         const ocrRes = await api.ocr(jobId);
         if (cancelled) return;
@@ -210,6 +221,7 @@ export function ReviewPage({ jobId, fileName, pageCount }: Props) {
       const saveMeta = { ...meta, debtor, partyLabel, status: "" };
       await api.save(jobId, entries, saveMeta);
       api.log(jobId, "save_complete", { entries: entries.length });
+      if (onDone) onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
       api.log(jobId, "save_failed", { message: err instanceof Error ? err.message : "Save failed" });

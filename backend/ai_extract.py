@@ -1,13 +1,12 @@
 """AI extraction layer: OCR blocks -> structured listing records.
 
 Provider contract:
-  extract_records(blocks, debug_dir) returns (records, usage)
+  extract_records(blocks) returns (records, usage, debug)
 To add/swap models, add a provider function and register it in extract_records().
 Provider-specific SDK imports stay inside provider functions.
 """
 
 import json
-from pathlib import Path
 
 from config import settings
 from cost import estimate_ai_cost
@@ -54,8 +53,9 @@ Return ONLY a JSON object: {"records": [...]}
 No explanation, no markdown, no code fences. Just the JSON."""
 
 
-# Public entry point. Routes never call a vendor SDK directly.
-def extract_records(blocks: list[dict], debug_dir: str | Path | None = None) -> tuple[list[dict], dict]:
+def extract_records(blocks: list[dict]) -> tuple[list[dict], dict, dict | None]:
+    """Public entry point. Returns (records, usage, debug_payload).
+    Routes never call a vendor SDK directly."""
     if not blocks:
         raise AppError("AI_NO_OCR_BLOCKS", "AI extraction cannot run without OCR blocks.", 422)
 
@@ -63,7 +63,7 @@ def extract_records(blocks: list[dict], debug_dir: str | Path | None = None) -> 
     provider = providers.get(settings.ai_provider)
     if not provider:
         raise AppError("UNKNOWN_AI_PROVIDER", f"Unknown AI provider: {settings.ai_provider}", 500)
-    return provider(blocks, Path(debug_dir) if debug_dir else None)
+    return provider(blocks)
 
 
 # Convert model block citations into frontend-ready highlight coordinates.
@@ -85,8 +85,8 @@ def _map_field(field: dict | None, blocks: list[dict]) -> dict:
     }
 
 
-def _claude_extract(blocks: list[dict], debug_dir: Path | None) -> tuple[list[dict], dict]:
-    # Keep vendor import local so switching providers does not affect app startup.
+def _claude_extract(blocks: list[dict]) -> tuple[list[dict], dict, dict | None]:
+    # Keep vendor import local so switching providers doesn't affect startup
     import anthropic
 
     client = anthropic.Anthropic(api_key=settings.ai_api_key)
@@ -101,24 +101,22 @@ def _claude_extract(blocks: list[dict], debug_dir: Path | None) -> tuple[list[di
     except Exception as exc:
         raise AppError("AI_PROVIDER_FAILED", "AI provider request failed.", 502, {"message": str(exc)}) from exc
 
-    if debug_dir:
-        (debug_dir / "ai_raw_response.json").write_text(json.dumps(
-            _response_debug_payload(response), indent=2, default=str
-        ))
+    # Build debug payload (saved to MongoDB by main.py for troubleshooting)
+    debug = _response_debug_payload(response)
 
     if getattr(response, "stop_reason", None) == "max_tokens":
-        raise AppError("AI_RESPONSE_TRUNCATED", "AI response was truncated — document may be too large.", 502, {"rawSaved": bool(debug_dir)})
+        raise AppError("AI_RESPONSE_TRUNCATED", "AI response was truncated — document may be too large.", 502)
 
     text = "".join(item.text for item in response.content if getattr(item, "type", None) == "text")
     parsed = _parse_json_from_text(text)
     if not parsed:
-        raise AppError("AI_INVALID_JSON", "AI did not return usable structured extraction data.", 502, {"rawSaved": bool(debug_dir)})
+        raise AppError("AI_INVALID_JSON", "AI did not return usable structured extraction data.", 502)
 
     raw_records = parsed.get("records") if "records" in parsed else [parsed]
     if not isinstance(raw_records, list) or not raw_records:
         raise AppError("AI_INVALID_SHAPE", "AI response did not contain a records array.", 502)
 
-    # Dedup protects against one legal matter appearing on multiple evidence pages.
+    # Dedup: one legal matter appearing on multiple evidence pages = one record
     seen: set[str] = set()
     records: list[dict] = []
     for raw in raw_records:
@@ -137,7 +135,7 @@ def _claude_extract(blocks: list[dict], debug_dir: Path | None) -> tuple[list[di
     usage = getattr(response, "usage", None)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    return records, estimate_ai_cost(input_tokens, output_tokens)
+    return records, estimate_ai_cost(input_tokens, output_tokens), debug
 
 
 def _parse_json_from_text(text: str) -> dict | None:

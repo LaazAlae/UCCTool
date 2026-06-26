@@ -1,0 +1,26 @@
+# MongoDB for the UCC Reporting Tool — with authentication.
+#
+# Start:   docker compose up -d
+# Stop:    docker compose down
+# Reset:   docker compose down -v  (WARNING: deletes ALL data — PDFs, extractions, everything)
+# Logs:    docker compose logs -f mongo
+#
+# MONGO_PASSWORD comes from .env (docker compose reads it automatically).
+# If you change the password, you MUST recreate the volume: docker compose down -v && docker compose up -d
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: ucc-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: uccadmin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-uccSecure2024!}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    mem_limit: 512m
+
+volumes:
+  mongo_data:

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # AWS Textract.
     aws_region: str = "us-east-1"
 
+    # MongoDB. Credentials must match docker-compose.yml.
+    mongo_url: str = "mongodb://uccadmin:uccSecure2024!@localhost:27017"
+    mongo_db: str = "ucc"
+
     # Hard safety limits.
     max_file_size_mb: int = 50
     max_pages: int = 30
@@ -24,9 +28,6 @@ class Settings(BaseSettings):
     textract_analyze_page_usd: float = 0.015
     ai_input_1m_tokens_usd: float = 3.00
     ai_output_1m_tokens_usd: float = 15.00
-
-    # Paths.
-    data_dir: str = "data"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

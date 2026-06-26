@@ -66,5 +66,33 @@ class LogBody(BaseModel):
     detail: dict = Field(default_factory=dict)
 
 
+class CreateProject(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    preparedFor: str = ""
+    clientMatter: str = ""
+    projectManager: str = ""
+    projectNumber: str = ""
+
+
+class UpdateProject(BaseModel):
+    name: str | None = None
+    preparedFor: str | None = None
+    clientMatter: str | None = None
+    projectManager: str | None = None
+    projectNumber: str | None = None
+
+
+class NoRecordsMeta(BaseModel):
+    debtor: str = Field(min_length=1, max_length=500)
+    searchType: str = Field(min_length=1, max_length=200)
+    jurisdiction: str = ""
+    thruDate: str = ""
+    yearsSearched: str = ""
+
+
+class ReorderBody(BaseModel):
+    jobIds: list[str] = Field(min_length=1)
+
+
 def all_fields_confirmed(entries: list[ListingEntry]) -> bool:
     return all(getattr(entry, key).confirmed for entry in entries for key in FIELD_KEYS)
