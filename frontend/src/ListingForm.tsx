@@ -25,7 +25,7 @@ interface Props {
   onDismissDeleted: () => void;
   onFieldFocus: (recordIndex: number, fieldKey: FieldKey) => void;
   onSave: () => void;
-  onDownloadPdf: () => void;
+  onPreviewPdf: () => void;
   saving: boolean;
 }
 
@@ -39,7 +39,7 @@ export function ListingForm({
   meta, onMetaChange, debtor, debtorConfidence, debtorConfirmed,
   onDebtorChange, onDebtorConfirm, onDebtorFocus, partyLabel, onPartyLabelChange,
   entries, onFieldChange, onRowConfirm, onDeleteEntry, onAddEntry, deleted, onUndoDelete, onDismissDeleted, onFieldFocus,
-  onSave, onDownloadPdf, saving,
+  onSave, onPreviewPdf, saving,
 }: Props) {
   useEffect(() => {
     if (!deleted) return;
@@ -154,7 +154,7 @@ export function ListingForm({
             style={{ flex: 1, padding: 9, background: "var(--primary)", color: "white", border: "none", borderRadius: 6, fontWeight: 500, opacity: saving || !allConfirmed ? 0.5 : 1, cursor: saving || !allConfirmed ? "default" : "pointer" }}
           >{saving ? "Saving..." : "Save Listing"}</button>
           <button
-            onClick={onDownloadPdf}
+            onClick={onPreviewPdf}
             style={{ padding: "9px 14px", background: "white", color: "var(--primary)", border: "1px solid var(--primary)", borderRadius: 6, fontWeight: 500, cursor: "pointer" }}
           >PDF</button>
         </div>

@@ -3,12 +3,34 @@ import * as pdfjsLib from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import type { Evidence, Project } from "./api";
+import { PdfModal } from "./PdfModal";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
 interface Props {
   projectId: string;
   onReview: (jobId: string, fileName: string, pageCount: number) => void;
+}
+
+interface DebtorGroup {
+  debtor: string;
+  items: Evidence[];
+}
+
+function groupByDebtor(evidence: Evidence[]): DebtorGroup[] {
+  const map = new Map<string, Evidence[]>();
+  for (const e of evidence) {
+    const key = e.debtor || "";
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(e);
+  }
+  const groups: DebtorGroup[] = [];
+  for (const [debtor, items] of map) {
+    if (debtor) groups.push({ debtor, items });
+  }
+  const unknown = map.get("");
+  if (unknown) groups.push({ debtor: "", items: unknown });
+  return groups;
 }
 
 export function ProjectDetailPage({ projectId, onReview }: Props) {
@@ -26,8 +48,12 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const [uploadPageCount, setUploadPageCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [pdfModal, setPdfModal] = useState<{ url: string; title: string; downloadName: string } | null>(null);
+
+  const [dragDebtor, setDragDebtor] = useState<string | null>(null);
+  const [dragLocalIdx, setDragLocalIdx] = useState<number | null>(null);
+  const [dragOverLocalIdx, setDragOverLocalIdx] = useState<number | null>(null);
 
   useEffect(() => { reload(); }, [projectId]);
 
@@ -121,23 +147,71 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
     }
   }
 
-  function handleDragStart(idx: number) { setDragIdx(idx); }
-  function handleDragOver(e: React.DragEvent, idx: number) { e.preventDefault(); setDragOverIdx(idx); }
+  function handleViewPdf(e: Evidence) {
+    const needsReview = e.resultType === "Records Found" && !e.hasListing;
+    if (needsReview) {
+      onReview(e.id, e.fileName, e.pageCount);
+    } else {
+      setPdfModal({
+        url: api.evidenceViewUrl(e.id),
+        title: e.debtor || e.fileName,
+        downloadName: e.fileName,
+      });
+    }
+  }
 
-  async function handleDrop(idx: number) {
-    if (dragIdx === null || !project) return;
-    const items = [...project.evidence];
-    const [moved] = items.splice(dragIdx, 1);
-    items.splice(idx, 0, moved);
-    setProject({ ...project, evidence: items });
-    setDragIdx(null);
-    setDragOverIdx(null);
+  function toggleCollapse(debtor: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(debtor)) next.delete(debtor);
+      else next.add(debtor);
+      return next;
+    });
+  }
+
+  function handleDragStart(debtor: string, localIdx: number) {
+    setDragDebtor(debtor);
+    setDragLocalIdx(localIdx);
+  }
+
+  function handleDragOver(ev: React.DragEvent, debtor: string, localIdx: number) {
+    ev.preventDefault();
+    if (debtor === dragDebtor) setDragOverLocalIdx(localIdx);
+  }
+
+  async function handleDrop(debtor: string, localIdx: number) {
+    if (dragLocalIdx === null || dragDebtor !== debtor || !project) return;
+
+    const groups = groupByDebtor(project.evidence);
+    const group = groups.find((g) => g.debtor === debtor);
+    if (!group) return;
+
+    const reordered = [...group.items];
+    const [moved] = reordered.splice(dragLocalIdx, 1);
+    reordered.splice(localIdx, 0, moved);
+
+    const newFlat: Evidence[] = [];
+    for (const g of groups) {
+      newFlat.push(...(g.debtor === debtor ? reordered : g.items));
+    }
+
+    setProject({ ...project, evidence: newFlat });
+    setDragLocalIdx(null);
+    setDragOverLocalIdx(null);
+    setDragDebtor(null);
+
     try {
-      await api.reorderEvidence(projectId, items.map((e) => e.id));
+      await api.reorderEvidence(projectId, newFlat.map((e) => e.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Reorder failed");
       await reload();
     }
+  }
+
+  function handleDragEnd() {
+    setDragLocalIdx(null);
+    setDragOverLocalIdx(null);
+    setDragDebtor(null);
   }
 
   async function handleShowTrash() {
@@ -158,6 +232,9 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
 
   const evidence = project.evidence || [];
   const includedCount = evidence.filter((e) => e.included).length;
+  const hasIncludedNeedsReview = evidence.some((e) => e.included && e.resultType === "Records Found" && !e.hasListing);
+  const canCompile = !compiling && includedCount > 0 && !hasIncludedNeedsReview;
+  const groups = groupByDebtor(evidence);
 
   return (
     <div>
@@ -199,20 +276,29 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
             </>
           )}
         </button>
-        <button
-          onClick={handleCompile}
-          disabled={compiling || includedCount === 0}
-          style={{
-            background: compiling || includedCount === 0 ? "var(--border)" : "var(--success)", color: "#fff",
-            fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
-            display: "flex", alignItems: "center", gap: 8,
-            boxShadow: compiling || includedCount === 0 ? "none" : "0 4px 12px rgba(21,128,61,0.20)",
-            opacity: compiling || includedCount === 0 ? 0.6 : 1,
-          }}
-        >
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
-          {compiling ? "Compiling..." : `Compile Report (${includedCount})`}
-        </button>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={canCompile ? handleCompile : undefined}
+            disabled={!canCompile}
+            title={hasIncludedNeedsReview ? "Review all included evidence before compiling" : undefined}
+            style={{
+              background: canCompile ? "var(--success)" : "var(--border)", color: "#fff",
+              fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
+              display: "flex", alignItems: "center", gap: 8,
+              boxShadow: canCompile ? "0 4px 12px rgba(21,128,61,0.20)" : "none",
+              opacity: canCompile ? 1 : 0.6,
+              cursor: canCompile ? "pointer" : "not-allowed",
+            }}
+          >
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+            {compiling ? "Compiling..." : `Compile Report (${includedCount})`}
+          </button>
+        </div>
+        {hasIncludedNeedsReview && (
+          <span style={{ fontSize: 12, color: "var(--danger)", fontWeight: 600 }}>
+            Some included items need review
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         <button
           onClick={handleShowTrash}
@@ -318,118 +404,183 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
           <p style={{ fontSize: 12, color: "var(--muted-light)" }}>Upload evidence PDFs to get started</p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-          {evidence.map((e, idx) => {
-            const needsReview = e.resultType === "Records Found" && !e.hasListing;
-            const isRecords = e.resultType === "Records Found";
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {groups.map((group) => {
+            const groupKey = group.debtor || "__unknown__";
+            const isCollapsed = collapsed.has(groupKey);
+            const groupIncluded = group.items.filter((e) => e.included).length;
+            const groupNeedsReview = group.items.some((e) => e.resultType === "Records Found" && !e.hasListing);
+
             return (
-              <div
-                key={e.id}
-                draggable
-                onDragStart={() => handleDragStart(idx)}
-                onDragOver={(ev) => handleDragOver(ev, idx)}
-                onDrop={() => handleDrop(idx)}
-                onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 14,
-                  padding: "15px 16px 15px 14px",
-                  background: "#fff",
-                  border: dragOverIdx === idx ? "1.5px solid var(--primary)" : "1px solid var(--border)",
-                  borderRadius: 12, opacity: dragIdx === idx ? 0.5 : 1,
-                  transition: "border-color 0.1s, opacity 0.1s",
-                }}
-              >
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#CBC5BD" strokeWidth="2" strokeLinecap="round" style={{ cursor: "grab", flexShrink: 0 }}><path d="M5 8h14M5 12h14M5 16h14"/></svg>
-
+              <div key={groupKey}>
                 <div
-                  style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
-                  onClick={() => {
-                    if (needsReview) onReview(e.id, e.fileName, e.pageCount);
-                    else window.open(`/api/evidence/${e.id}/view`, "_blank");
+                  onClick={() => toggleCollapse(groupKey)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                    background: group.debtor ? "#fff" : "var(--warning-bg)",
+                    border: `1px solid ${group.debtor ? "var(--border)" : "#D4C9A8"}`,
+                    borderRadius: isCollapsed ? 10 : "10px 10px 0 0",
+                    cursor: "pointer", userSelect: "none",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <span style={{ fontWeight: 700, fontSize: 15, color: "var(--text)" }}>
-                      {e.debtor || e.fileName}
+                  <svg
+                    width="14" height="14" viewBox="0 0 24 24" fill="none"
+                    stroke="var(--muted)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+                    style={{ transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.15s", flexShrink: 0 }}
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+
+                  <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text)", flex: 1 }}>
+                    {group.debtor || "Debtor Unknown"}
+                  </span>
+
+                  <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
+                    {group.items.length} item{group.items.length !== 1 ? "s" : ""}
+                  </span>
+
+                  {groupNeedsReview && (
+                    <span style={{
+                      background: "var(--danger-bg)", color: "var(--danger)", fontSize: 10.5, fontWeight: 700,
+                      padding: "2px 7px", borderRadius: 5, display: "flex", alignItems: "center", gap: 3,
+                    }}>
+                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
+                      Needs Review
                     </span>
-                    {isRecords ? (
-                      <span style={{ background: "var(--success-bg)", color: "var(--success)", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
-                        {e.recordCount} record{e.recordCount !== 1 ? "s" : ""}
-                      </span>
-                    ) : (
-                      <span style={{ background: "#EFEEEC", color: "#7A756F", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
-                        No Records
-                      </span>
-                    )}
-                    {needsReview && (
-                      <span style={{
-                        background: "var(--danger-bg)", color: "var(--danger)", fontSize: 11, fontWeight: 700,
-                        padding: "2px 8px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4,
-                      }}>
-                        <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
-                        Needs Review
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--muted)" }}>
-                    {e.searchType && <>{e.searchType} &middot; </>}
-                    {e.jurisdiction && <>{e.jurisdiction} &middot; </>}
-                    {e.thruDate && <>Thru {e.thruDate} &middot; </>}
-                    {e.createdAt ? `Uploaded ${new Date(e.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
-                  </div>
-                </div>
-
-                {needsReview ? (
-                  <button
-                    onClick={() => onReview(e.id, e.fileName, e.pageCount)}
-                    style={{
-                      background: "#9B1C1C", color: "#fff", fontWeight: 700, fontSize: 12.5,
-                      padding: "7px 12px", border: "none", borderRadius: 8,
-                      display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
-                    }}
-                  >
-                    Review
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => window.open(`/api/evidence/${e.id}/view`, "_blank")}
-                    style={{
-                      background: "#fff", color: "var(--text-secondary)", fontWeight: 600, fontSize: 12.5,
-                      padding: "7px 12px", border: "1px solid var(--border)", borderRadius: 8,
-                      display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
-                    }}
-                  >
-                    Open
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 5h5v5M19 5l-7 7M11 5H6a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>
-                  </button>
-                )}
-
-                <button
-                  onClick={() => handleDelete(e.id)}
-                  title="Move to trash"
-                  style={{
-                    width: 34, height: 34, border: "1px solid var(--border)", borderRadius: 8,
-                    background: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
-                    flexShrink: 0,
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-                </button>
-
-                <div
-                  onClick={() => handleToggleInclude(e.id, !e.included)}
-                  style={{
-                    width: 24, height: 24, borderRadius: 7, flexShrink: 0, cursor: "pointer",
-                    background: e.included ? "#9B1C1C" : "#fff",
-                    border: e.included ? "none" : "1.5px solid var(--border-light)",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                  }}
-                >
-                  {e.included && (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
                   )}
+
+                  <span style={{ fontSize: 11, color: "var(--muted-light)" }}>
+                    {groupIncluded}/{group.items.length} included
+                  </span>
                 </div>
+
+                {!isCollapsed && (
+                  <div style={{
+                    border: `1px solid ${group.debtor ? "var(--border)" : "#D4C9A8"}`,
+                    borderTop: "none",
+                    borderRadius: "0 0 10px 10px",
+                    overflow: "hidden",
+                  }}>
+                    {group.items.map((e, localIdx) => {
+                      const needsReview = e.resultType === "Records Found" && !e.hasListing;
+                      const isRecords = e.resultType === "Records Found";
+                      const isDragging = dragDebtor === group.debtor && dragLocalIdx === localIdx;
+                      const isDragOver = dragDebtor === group.debtor && dragOverLocalIdx === localIdx;
+
+                      return (
+                        <div
+                          key={e.id}
+                          draggable
+                          onDragStart={() => handleDragStart(group.debtor, localIdx)}
+                          onDragOver={(ev) => handleDragOver(ev, group.debtor, localIdx)}
+                          onDrop={() => handleDrop(group.debtor, localIdx)}
+                          onDragEnd={handleDragEnd}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 14,
+                            padding: "13px 16px 13px 14px",
+                            background: isDragOver ? "var(--primary-bg)" : "#fff",
+                            borderTop: localIdx > 0 ? "1px solid var(--border)" : "none",
+                            opacity: isDragging ? 0.5 : 1,
+                            transition: "background 0.1s, opacity 0.1s",
+                          }}
+                        >
+                          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#CBC5BD" strokeWidth="2" strokeLinecap="round" style={{ cursor: "grab", flexShrink: 0 }}>
+                            <path d="M5 8h14M5 12h14M5 16h14"/>
+                          </svg>
+
+                          <div
+                            style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
+                            onClick={() => handleViewPdf(e)}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                              <span style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>
+                                {e.fileName}
+                              </span>
+                              {isRecords ? (
+                                <span style={{ background: "var(--success-bg)", color: "var(--success)", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                                  {e.recordCount} record{e.recordCount !== 1 ? "s" : ""}
+                                </span>
+                              ) : (
+                                <span style={{ background: "#EFEEEC", color: "#7A756F", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                                  No Records
+                                </span>
+                              )}
+                              {needsReview && (
+                                <span style={{
+                                  background: "var(--danger-bg)", color: "var(--danger)", fontSize: 11, fontWeight: 700,
+                                  padding: "2px 8px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4,
+                                }}>
+                                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
+                                  Needs Review
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ marginTop: 3, fontSize: 12, color: "var(--muted)" }}>
+                              {e.searchType && <>{e.searchType} &middot; </>}
+                              {e.jurisdiction && <>{e.jurisdiction} &middot; </>}
+                              {e.thruDate && <>Thru {e.thruDate} &middot; </>}
+                              {e.createdAt ? `Uploaded ${new Date(e.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                            </div>
+                          </div>
+
+                          {needsReview ? (
+                            <button
+                              onClick={() => onReview(e.id, e.fileName, e.pageCount)}
+                              style={{
+                                background: "#9B1C1C", color: "#fff", fontWeight: 700, fontSize: 12.5,
+                                padding: "7px 12px", border: "none", borderRadius: 8,
+                                display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+                              }}
+                            >
+                              Review
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleViewPdf(e)}
+                              style={{
+                                background: "#fff", color: "var(--text-secondary)", fontWeight: 600, fontSize: 12.5,
+                                padding: "7px 12px", border: "1px solid var(--border)", borderRadius: 8,
+                                display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+                              }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                              </svg>
+                              View
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => handleDelete(e.id)}
+                            title="Move to trash"
+                            style={{
+                              width: 34, height: 34, border: "1px solid var(--border)", borderRadius: 8,
+                              background: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9A948D" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                          </button>
+
+                          <div
+                            onClick={() => handleToggleInclude(e.id, !e.included)}
+                            style={{
+                              width: 24, height: 24, borderRadius: 7, flexShrink: 0, cursor: "pointer",
+                              background: e.included ? "#9B1C1C" : "#fff",
+                              border: e.included ? "none" : "1.5px solid var(--border-light)",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                            }}
+                          >
+                            {e.included && (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 6"/></svg>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -475,6 +626,15 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
             </div>
           )}
         </div>
+      )}
+
+      {pdfModal && (
+        <PdfModal
+          url={pdfModal.url}
+          title={pdfModal.title}
+          downloadName={pdfModal.downloadName}
+          onClose={() => setPdfModal(null)}
+        />
       )}
     </div>
   );

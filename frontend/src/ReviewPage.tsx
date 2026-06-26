@@ -4,6 +4,7 @@ import type { FieldKey, ListingEntry, ListingMeta } from "./api";
 import { PdfViewer } from "./PdfViewer";
 import type { Highlight } from "./PdfViewer";
 import { ListingForm } from "./ListingForm";
+import { PdfModal } from "./PdfModal";
 
 const FIELD_LABELS: Record<FieldKey, string> = {
   fileType: "File Type",
@@ -227,7 +228,9 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
     }
   }
 
-  async function handleDownloadPdf() {
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+
+  async function handlePreviewPdf() {
     try {
       const pdfMeta = { ...meta, debtor, partyLabel, status: "" };
       const pdfRecords = entries.map((e) => ({
@@ -236,8 +239,9 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
         fileType: e.fileType.value,
         securedParty: e.securedParty.value,
       }));
-      await api.downloadPdf(jobId, pdfMeta, pdfRecords);
-      api.log(jobId, "pdf_downloaded", { records: entries.length });
+      const url = await api.previewPdf(jobId, pdfMeta, pdfRecords);
+      setPdfPreviewUrl(url);
+      api.log(jobId, "pdf_previewed", { records: entries.length });
     } catch (err) {
       setError(err instanceof Error ? err.message : "PDF generation failed");
     }
@@ -354,10 +358,19 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
           onDismissDeleted={handleDismissDeleted}
           onFieldFocus={handleFieldFocus}
           onSave={handleSave}
-          onDownloadPdf={handleDownloadPdf}
+          onPreviewPdf={handlePreviewPdf}
           saving={saving}
         />
         </div>
+
+      {pdfPreviewUrl && (
+        <PdfModal
+          url={pdfPreviewUrl}
+          title={`${fileName} — Listing + Evidence`}
+          downloadName={`${fileName.replace(/\.pdf$/i, "")}_listing.pdf`}
+          onClose={() => { URL.revokeObjectURL(pdfPreviewUrl); setPdfPreviewUrl(null); }}
+        />
+      )}
     </div>
   );
 }

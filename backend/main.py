@@ -46,7 +46,7 @@ from db import (
 )
 from errors import AppError, app_error_handler
 from ocr import run_ocr
-from pdf_gen import compile_project_pdf, generate_listing_pdf, view_evidence_pdf
+from pdf_gen import compile_project_pdf, generate_listing_pdf, preview_listing_with_evidence, view_evidence_pdf
 from schemas import (
     CreateProject,
     LogBody,
@@ -261,7 +261,8 @@ def save(job_id: str, body: SaveBody):
 @app.post("/api/pdf/{job_id}")
 def generate_pdf(job_id: str, body: PdfBody):
     get_job(job_id)
-    pdf_bytes = bytes(generate_listing_pdf(body.meta.model_dump(), body.records))
+    evidence_bytes = get_pdf(job_id)
+    pdf_bytes = bytes(preview_listing_with_evidence(body.meta.model_dump(), body.records, evidence_bytes))
     log_event(job_id, "pdf_generated", {"records": len(body.records)})
     return Response(
         content=pdf_bytes,

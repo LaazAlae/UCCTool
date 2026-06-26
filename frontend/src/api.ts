@@ -128,7 +128,7 @@ export const api = {
     });
   },
 
-  async downloadPdf(jobId: string, meta: Record<string, string>, records: Record<string, string>[]) {
+  async previewPdf(jobId: string, meta: Record<string, string>, records: Record<string, string>[]): Promise<string> {
     const res = await fetch(`${BASE}/pdf/${jobId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -139,12 +139,7 @@ export const api = {
       throw new Error(body.error?.message || "PDF generation failed");
     }
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "listing_page.pdf";
-    a.click();
-    URL.revokeObjectURL(url);
+    return URL.createObjectURL(blob);
   },
 
   log(jobId: string, action: string, detail: Record<string, unknown> = {}) {
@@ -161,6 +156,10 @@ export const api = {
 
   evidenceUrl(jobId: string) {
     return `${BASE}/evidence/${jobId}`;
+  },
+
+  evidenceViewUrl(jobId: string) {
+    return `${BASE}/evidence/${jobId}/view`;
   },
 
   // ── Projects ────────────────────────────────────────────────────────
