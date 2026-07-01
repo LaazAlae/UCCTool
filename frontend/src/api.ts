@@ -90,6 +90,7 @@ export interface Evidence {
   jurisdiction: string;
   thruDate: string;
   recordCount: number;
+  hasPdf: boolean;
   hasListing: boolean;
   hasMeta: boolean;
   createdAt: string;
@@ -187,7 +188,25 @@ export const api = {
     });
   },
 
+  createProjectFromSummary(file: File) {
+    const form = new FormData();
+    form.append("summary", file);
+    return request<Project>("/projects/from-summary", {
+      method: "POST",
+      body: form,
+    });
+  },
+
   // ── Evidence management ─────────────────────────────────────────────
+  uploadEvidencePdf(projectId: string, jobId: string, file: File) {
+    const form = new FormData();
+    form.append("evidence", file);
+    return request<{ jobId: string; fileName: string; pageCount: number }>(
+      `/projects/${projectId}/evidence/${jobId}/upload-pdf`,
+      { method: "POST", body: form },
+    );
+  },
+
   uploadToProject(projectId: string, file: File, resultType: string) {
     const form = new FormData();
     form.append("evidence", file);

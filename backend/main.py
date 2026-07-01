@@ -16,9 +16,11 @@ from fastapi.responses import JSONResponse
 from pypdf import PdfReader
 
 from ai_extract import extract_records
+from ai_summary import extract_summary
 from config import settings
 from cost import check_job_budget, estimate_ocr_cost, total_cost
 from db import (
+    attach_pdf_to_job,
     check_daily_budget,
     create_job,
     create_project,
@@ -290,6 +292,100 @@ def create_project_route(body: CreateProject):
     return _serialize(doc)
 
 
+@app.post("/api/projects/from-summary")
+async def create_project_from_summary(summary: UploadFile):
+    """Upload a UCS Project Summary PDF to create a project with all evidence entries."""
+    if not summary.filename or not summary.filename.lower().endswith(".pdf"):
+        raise AppError("UPLOAD_NOT_PDF", "Only PDF files are accepted.", 400)
+
+    content = await summary.read()
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > settings.max_file_size_mb:
+        raise AppError("UPLOAD_TOO_LARGE", "File exceeds size limit.", 400)
+
+    try:
+        page_count = len(PdfReader(io.BytesIO(content)).pages)
+    except Exception as exc:
+        raise AppError("UPLOAD_INVALID_PDF", "Not a readable PDF.", 400) from exc
+
+    estimated = estimate_ocr_cost(page_count)
+    check_job_budget(estimated["estimatedCostUsd"])
+    check_daily_budget(estimated["estimatedCostUsd"])
+
+    project_id = str(uuid.uuid4())
+
+    # OCR the summary
+    log_event(project_id, "summary_ocr_start", {"provider": settings.ocr_provider})
+    t0 = time.time()
+    blocks, ocr_usage = run_ocr(content)
+    elapsed_ocr = int((time.time() - t0) * 1000)
+    log_event(project_id, "summary_ocr_complete", {**ocr_usage, "blocks": len(blocks), "durationMs": elapsed_ocr})
+    log.info("Summary OCR done: %s — %d blocks in %dms", project_id, len(blocks), elapsed_ocr)
+
+    # AI extraction
+    log_event(project_id, "summary_extract_start", {"provider": settings.ai_provider, "model": settings.ai_model})
+    t0 = time.time()
+    summary_data, ai_usage, debug = extract_summary(blocks)
+    elapsed_ai = int((time.time() - t0) * 1000)
+
+    usage = {"ocr": ocr_usage, "ai": ai_usage, "totalEstimatedCostUsd": total_cost(ocr_usage, ai_usage)}
+    record_usage(project_id, usage)
+    log_event(project_id, "summary_extract_complete", {
+        **ai_usage, "durationMs": elapsed_ai,
+        "searchLines": len(summary_data.get("searchLines", [])),
+    })
+    log.info("Summary extraction done: %s — %d lines in %dms ($%.4f)",
+             project_id, len(summary_data.get("searchLines", [])), elapsed_ai, usage["totalEstimatedCostUsd"])
+
+    # Store summary PDF
+    summary_pdf_file_id = store_pdf(project_id, summary.filename, content)
+
+    # Create project
+    project_name = summary_data.get("projectNumber") or summary.filename.replace(".pdf", "")
+    doc = create_project(project_id, project_name, {
+        "preparedFor": summary_data.get("preparedFor", ""),
+        "clientMatter": summary_data.get("clientMatter", ""),
+        "projectManager": summary_data.get("projectManager", ""),
+        "projectNumber": summary_data.get("projectNumber", ""),
+    }, summary_pdf_file_id=summary_pdf_file_id)
+
+    # Create evidence entries from search lines
+    search_lines = summary_data.get("searchLines", [])
+    for i, line in enumerate(search_lines):
+        job_id = str(uuid.uuid4())
+        result_type = line.get("resultType", "No Records")
+        search_type = line.get("searchType", "Unknown")
+
+        create_job(
+            job_id=job_id, file_name=search_type, page_count=0,
+            pdf_file_id=None, project_id=project_id, order=i,
+            result_type=result_type,
+        )
+
+        meta = {
+            "debtor": line.get("debtor", ""),
+            "summary": search_type,
+            "jurisdiction": line.get("jurisdiction", ""),
+            "thruDate": line.get("thruDate", ""),
+        }
+        db_save_listing(job_id, [], meta)
+
+        log_event(job_id, "evidence_from_summary", {
+            "projectId": project_id, "debtor": meta["debtor"],
+            "searchType": search_type, "resultType": result_type, "order": i,
+        })
+
+    log_event(project_id, "project_created_from_summary", {
+        "name": project_name,
+        "searchLines": len(search_lines),
+        "noRecords": sum(1 for l in search_lines if l.get("resultType") == "No Records"),
+        "recordsFound": sum(1 for l in search_lines if l.get("resultType") == "Records Found"),
+    })
+    log.info("Project from summary: %s (%s) — %d lines", project_id, project_name, len(search_lines))
+
+    return _serialize(doc)
+
+
 @app.get("/api/projects")
 def list_projects_route():
     projects = list_projects()
@@ -360,6 +456,44 @@ async def upload_to_project(project_id: str, evidence: UploadFile, result_type: 
     log.info("Evidence uploaded to project %s: %s (%s)", project_id, evidence.filename, result_type)
 
     return {"jobId": job_id, "fileName": evidence.filename, "pageCount": page_count, "resultType": result_type}
+
+
+@app.post("/api/projects/{project_id}/evidence/{job_id}/upload-pdf")
+async def upload_evidence_pdf(project_id: str, job_id: str, evidence: UploadFile):
+    """Upload a PDF to an existing placeholder evidence entry (created from summary)."""
+    get_project(project_id)
+    job = get_job(job_id)
+    if job.get("projectId") != project_id:
+        raise AppError("EVIDENCE_NOT_IN_PROJECT", "Evidence does not belong to this project.", 400)
+
+    if not evidence.filename or not evidence.filename.lower().endswith(".pdf"):
+        raise AppError("UPLOAD_NOT_PDF", "Only PDF files are accepted.", 400)
+
+    content = await evidence.read()
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > settings.max_file_size_mb:
+        raise AppError("UPLOAD_TOO_LARGE", "File exceeds size limit.", 400)
+
+    try:
+        page_count = len(PdfReader(io.BytesIO(content)).pages)
+    except Exception as exc:
+        raise AppError("UPLOAD_INVALID_PDF", "Not a readable PDF.", 400) from exc
+
+    if page_count > settings.max_pages:
+        raise AppError("UPLOAD_TOO_MANY_PAGES", "PDF exceeds page limit.", 400)
+
+    estimated = estimate_ocr_cost(page_count)
+    check_job_budget(estimated["estimatedCostUsd"])
+    check_daily_budget(estimated["estimatedCostUsd"])
+
+    pdf_file_id = store_pdf(job_id, evidence.filename, content)
+    attach_pdf_to_job(job_id, pdf_file_id, evidence.filename, page_count)
+    log_event(job_id, "evidence_pdf_uploaded", {
+        "projectId": project_id, "fileName": evidence.filename, "pages": page_count,
+    })
+    log.info("Evidence PDF uploaded: %s (%s, %d pages)", job_id, evidence.filename, page_count)
+
+    return {"jobId": job_id, "fileName": evidence.filename, "pageCount": page_count}
 
 
 @app.post("/api/projects/{project_id}/evidence/{job_id}/no-records-meta")
@@ -467,7 +601,7 @@ def _serialize(doc: dict) -> dict:
     out = {**doc}
     if "_id" in out:
         out["id"] = str(out.pop("_id"))
-    for key in ("pdfFileId", "createdAt", "updatedAt", "deletedAt"):
+    for key in ("pdfFileId", "summaryPdfFileId", "createdAt", "updatedAt", "deletedAt"):
         if key in out and out[key] is not None:
             out[key] = str(out[key])
     return out
@@ -489,6 +623,7 @@ def _serialize_evidence(doc: dict) -> dict:
         "jurisdiction": meta.get("jurisdiction", ""),
         "thruDate": meta.get("thruDate", ""),
         "recordCount": len(listing),
+        "hasPdf": bool(doc.get("pdfFileId")),
         "hasListing": bool(listing),
         "hasMeta": bool(meta),
         "createdAt": str(doc.get("createdAt", "")),

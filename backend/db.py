@@ -234,7 +234,7 @@ def record_usage(job_id: str, usage: dict):
 
 # ── Projects ───────────────────────────────────────────────────────────────
 
-def create_project(project_id: str, name: str, meta: dict) -> dict:
+def create_project(project_id: str, name: str, meta: dict, summary_pdf_file_id=None) -> dict:
     """Create a new project that groups evidence for a compiled report."""
     doc = {
         "_id": project_id,
@@ -243,6 +243,7 @@ def create_project(project_id: str, name: str, meta: dict) -> dict:
         "clientMatter": meta.get("clientMatter", ""),
         "projectManager": meta.get("projectManager", ""),
         "projectNumber": meta.get("projectNumber", ""),
+        "summaryPdfFileId": summary_pdf_file_id,
         "createdBy": None,
         "createdAt": datetime.now(timezone.utc),
         "updatedAt": datetime.now(timezone.utc),
@@ -326,6 +327,24 @@ def reorder_evidence(project_id: str, job_ids: list[str]):
 def update_evidence_included(job_id: str, included: bool):
     """Toggle whether evidence is included in compilation."""
     _update_job(job_id, {"included": included})
+
+
+def get_summary_pdf(project_id: str) -> bytes | None:
+    """Return the uploaded summary PDF for a project, or None."""
+    project = get_project(project_id)
+    file_id = project.get("summaryPdfFileId")
+    if not file_id:
+        return None
+    try:
+        return _get_gridfs().get(file_id).read()
+    except gridfs.NoFile:
+        return None
+
+
+def attach_pdf_to_job(job_id: str, pdf_file_id, file_name: str, page_count: int):
+    """Attach an uploaded PDF to an existing placeholder job."""
+    _update_job(job_id, {"pdfFileId": pdf_file_id, "fileName": file_name, "pageCount": page_count})
+    log.debug("PDF attached to job: %s (%s, %d pages)", job_id, file_name, page_count)
 
 
 def get_evidence_count(project_id: str) -> int:

@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import * as pdfjsLib from "pdfjs-dist";
-import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import type { Evidence, Project } from "./api";
 import { PdfModal } from "./PdfModal";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
 interface Props {
   projectId: string;
@@ -45,7 +41,6 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [resultType, setResultType] = useState<"Records Found" | "No Records" | "">("");
   const [uploading, setUploading] = useState(false);
-  const [uploadPageCount, setUploadPageCount] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -54,6 +49,11 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const [dragDebtor, setDragDebtor] = useState<string | null>(null);
   const [dragLocalIdx, setDragLocalIdx] = useState<number | null>(null);
   const [dragOverLocalIdx, setDragOverLocalIdx] = useState<number | null>(null);
+
+  // Per-row evidence upload for Records Found placeholders
+  const [pendingUploadJobId, setPendingUploadJobId] = useState<string | null>(null);
+  const [rowUploading, setRowUploading] = useState<string | null>(null);
+  const evidenceInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { reload(); }, [projectId]);
 
@@ -91,16 +91,27 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
     }
   }
 
-  async function handleFileSelect(file: File | null) {
-    setUploadFile(file);
-    setUploadPageCount(0);
-    if (!file) return;
+  function handleRowUploadClick(jobId: string) {
+    setPendingUploadJobId(jobId);
+    if (evidenceInputRef.current) {
+      evidenceInputRef.current.value = "";
+      evidenceInputRef.current.click();
+    }
+  }
+
+  async function handleRowFileSelect(file: File | null) {
+    if (!file || !pendingUploadJobId) return;
+    setRowUploading(pendingUploadJobId);
+    setError(null);
     try {
-      const buf = await file.arrayBuffer();
-      const doc = await pdfjsLib.getDocument(new Uint8Array(buf)).promise;
-      setUploadPageCount(doc.numPages);
-      doc.destroy();
-    } catch {}
+      const res = await api.uploadEvidencePdf(projectId, pendingUploadJobId, file);
+      onReview(res.jobId, res.fileName, res.pageCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setRowUploading(null);
+      setPendingUploadJobId(null);
+    }
   }
 
   async function handleDelete(jobId: string) {
@@ -148,6 +159,14 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   }
 
   function handleViewPdf(e: Evidence) {
+    if (!e.hasPdf) {
+      setPdfModal({
+        url: "about:blank",
+        title: `${e.searchType || "No Records"} — ${e.debtor || "Unknown"}`,
+        downloadName: "",
+      });
+      return;
+    }
     const needsReview = e.resultType === "Records Found" && !e.hasListing;
     if (needsReview) {
       onReview(e.id, e.fileName, e.pageCount);
@@ -233,30 +252,44 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
   const evidence = project.evidence || [];
   const includedCount = evidence.filter((e) => e.included).length;
   const hasIncludedNeedsReview = evidence.some((e) => e.included && e.resultType === "Records Found" && !e.hasListing);
-  const canCompile = !compiling && includedCount > 0 && !hasIncludedNeedsReview;
+  const hasIncludedNeedsPdf = evidence.some((e) => e.included && e.resultType === "Records Found" && !e.hasPdf);
+  const canCompile = !compiling && includedCount > 0 && !hasIncludedNeedsReview && !hasIncludedNeedsPdf;
   const groups = groupByDebtor(evidence);
+
+  const recordsFoundCount = evidence.filter((e) => e.resultType === "Records Found").length;
+  const recordsFoundUploaded = evidence.filter((e) => e.resultType === "Records Found" && e.hasPdf).length;
+  const recordsFoundReviewed = evidence.filter((e) => e.resultType === "Records Found" && e.hasListing).length;
 
   return (
     <div>
+      {/* Hidden file input for per-row evidence uploads */}
+      <input ref={evidenceInputRef} type="file" accept=".pdf" style={{ display: "none" }}
+        onChange={(e) => { handleRowFileSelect(e.target.files?.[0] || null); e.target.value = ""; }} />
+
       <div style={{ marginBottom: 24 }}>
         <div style={{ fontSize: 25, fontWeight: 800, color: "var(--text)", letterSpacing: "-0.02em" }}>{project.name}</div>
         <div style={{ marginTop: 6, fontSize: 13.5, color: "var(--text-secondary)" }}>
           {project.preparedFor && <>{project.preparedFor.split("\n")[0]} &nbsp;&middot;&nbsp; </>}
           {project.clientMatter && <>Matter <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>#{project.clientMatter}</span> &nbsp;&middot;&nbsp; </>}
           {evidence.length} evidence item{evidence.length !== 1 ? "s" : ""}
+          {recordsFoundCount > 0 && (
+            <> &nbsp;&middot;&nbsp; <span style={{ color: recordsFoundReviewed === recordsFoundCount ? "var(--success)" : "var(--text-secondary)" }}>
+              {recordsFoundReviewed}/{recordsFoundCount} records reviewed
+            </span></>
+          )}
         </div>
       </div>
 
       {error && (
         <div style={{ padding: "10px 14px", background: "var(--danger-bg)", color: "var(--danger)", borderRadius: 8, fontSize: 13, marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           {error}
-          <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "var(--danger)", fontSize: 16, padding: "0 4px" }}>x</button>
+          <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "var(--danger)", fontSize: 16, padding: "0 4px", cursor: "pointer" }}>x</button>
         </div>
       )}
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: showUpload ? 18 : 24 }}>
         <button
-          onClick={() => { setShowUpload(!showUpload); setResultType(""); setUploadFile(null); setUploadPageCount(0); }}
+          onClick={() => { setShowUpload(!showUpload); setResultType(""); setUploadFile(null); }}
           style={{
             background: showUpload ? "var(--primary-hover)" : "var(--primary)", color: "#fff",
             fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
@@ -280,7 +313,7 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
           <button
             onClick={canCompile ? handleCompile : undefined}
             disabled={!canCompile}
-            title={hasIncludedNeedsReview ? "Review all included evidence before compiling" : undefined}
+            title={hasIncludedNeedsPdf ? "Upload evidence for all Records Found items" : hasIncludedNeedsReview ? "Review all included evidence before compiling" : undefined}
             style={{
               background: canCompile ? "var(--success)" : "var(--border)", color: "#fff",
               fontWeight: 700, fontSize: 14, padding: "11px 18px", border: "none", borderRadius: 10,
@@ -294,9 +327,9 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
             {compiling ? "Compiling..." : `Compile Report (${includedCount})`}
           </button>
         </div>
-        {hasIncludedNeedsReview && (
+        {(hasIncludedNeedsReview || hasIncludedNeedsPdf) && (
           <span style={{ fontSize: 12, color: "var(--danger)", fontWeight: 600 }}>
-            Some included items need review
+            {hasIncludedNeedsPdf ? "Some items need evidence uploaded" : "Some included items need review"}
           </span>
         )}
         <div style={{ flex: 1 }} />
@@ -318,11 +351,10 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
       {showUpload && (
         <div style={{ background: "#fff", border: "1px solid var(--border)", borderRadius: 14, padding: 24, marginBottom: 26, boxShadow: "0 2px 10px rgba(20,18,16,0.04)" }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", marginBottom: 18 }}>Upload new evidence</div>
-
           <div style={{ display: "flex", gap: 22, alignItems: "flex-end" }}>
             <div style={{ flex: 1 }}>
               <label style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.08em", marginBottom: 7 }}>PDF FILE</label>
-              <input ref={inputRef} type="file" accept=".pdf" onChange={(e) => handleFileSelect(e.target.files?.[0] || null)} style={{ display: "none" }} />
+              <input ref={inputRef} type="file" accept=".pdf" onChange={(e) => setUploadFile(e.target.files?.[0] || null)} style={{ display: "none" }} />
               <button
                 onClick={() => inputRef.current?.click()}
                 style={{
@@ -331,7 +363,6 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
                   borderRadius: 10, background: uploadFile ? "var(--primary-bg)" : "#FAFAF9",
                   fontSize: 14, fontWeight: 500, color: uploadFile ? "var(--text)" : "var(--muted)",
                   display: "flex", alignItems: "center", gap: 10, textAlign: "left", cursor: "pointer",
-                  transition: "border-color 0.15s, background 0.15s",
                 }}
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={uploadFile ? "#9B1C1C" : "#9A948D"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -357,23 +388,6 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
               </select>
             </div>
           </div>
-
-          {uploadPageCount > 0 && (
-            <div style={{ marginTop: 14, fontSize: 13, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{
-                background: "var(--primary-bg)", color: "var(--primary)", fontSize: 12, fontWeight: 700,
-                padding: "3px 10px", borderRadius: 6,
-              }}>
-                {uploadPageCount} page{uploadPageCount !== 1 ? "s" : ""}
-              </span>
-              {resultType === "Records Found" && (
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Est. cost ~${(uploadPageCount * 0.02).toFixed(2)}
-                </span>
-              )}
-            </div>
-          )}
-
           <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid #ECEAE6", display: "flex", justifyContent: "flex-end" }}>
             <button
               onClick={handleUpload}
@@ -409,7 +423,7 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
             const groupKey = group.debtor || "__unknown__";
             const isCollapsed = collapsed.has(groupKey);
             const groupIncluded = group.items.filter((e) => e.included).length;
-            const groupNeedsReview = group.items.some((e) => e.resultType === "Records Found" && !e.hasListing);
+            const groupNeedsAction = group.items.some((e) => e.resultType === "Records Found" && (!e.hasPdf || !e.hasListing));
 
             return (
               <div key={groupKey}>
@@ -439,13 +453,13 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
                     {group.items.length} item{group.items.length !== 1 ? "s" : ""}
                   </span>
 
-                  {groupNeedsReview && (
+                  {groupNeedsAction && (
                     <span style={{
                       background: "var(--danger-bg)", color: "var(--danger)", fontSize: 10.5, fontWeight: 700,
                       padding: "2px 7px", borderRadius: 5, display: "flex", alignItems: "center", gap: 3,
                     }}>
                       <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
-                      Needs Review
+                      Needs Action
                     </span>
                   )}
 
@@ -462,10 +476,12 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
                     overflow: "hidden",
                   }}>
                     {group.items.map((e, localIdx) => {
-                      const needsReview = e.resultType === "Records Found" && !e.hasListing;
                       const isRecords = e.resultType === "Records Found";
+                      const needsPdf = isRecords && !e.hasPdf;
+                      const needsReview = isRecords && e.hasPdf && !e.hasListing;
                       const isDragging = dragDebtor === group.debtor && dragLocalIdx === localIdx;
                       const isDragOver = dragDebtor === group.debtor && dragOverLocalIdx === localIdx;
+                      const isRowUploading = rowUploading === e.id;
 
                       return (
                         <div
@@ -478,7 +494,7 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
                           style={{
                             display: "flex", alignItems: "center", gap: 14,
                             padding: "13px 16px 13px 14px",
-                            background: isDragOver ? "var(--primary-bg)" : "#fff",
+                            background: isDragOver ? "var(--primary-bg)" : needsPdf ? "#FFFBF5" : "#fff",
                             borderTop: localIdx > 0 ? "1px solid var(--border)" : "none",
                             opacity: isDragging ? 0.5 : 1,
                             transition: "background 0.1s, opacity 0.1s",
@@ -489,41 +505,58 @@ export function ProjectDetailPage({ projectId, onReview }: Props) {
                           </svg>
 
                           <div
-                            style={{ flex: 1, minWidth: 0, cursor: "pointer" }}
-                            onClick={() => handleViewPdf(e)}
+                            style={{ flex: 1, minWidth: 0, cursor: needsPdf ? "default" : "pointer" }}
+                            onClick={() => { if (!needsPdf) handleViewPdf(e); }}
                           >
                             <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
                               <span style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}>
-                                {e.fileName}
+                                {e.searchType || e.fileName}
                               </span>
                               {isRecords ? (
-                                <span style={{ background: "var(--success-bg)", color: "var(--success)", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
-                                  {e.recordCount} record{e.recordCount !== 1 ? "s" : ""}
-                                </span>
+                                needsPdf ? (
+                                  <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                                    Awaiting Upload
+                                  </span>
+                                ) : needsReview ? (
+                                  <span style={{
+                                    background: "var(--danger-bg)", color: "var(--danger)", fontSize: 11, fontWeight: 700,
+                                    padding: "2px 8px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4,
+                                  }}>
+                                    <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
+                                    Needs Review
+                                  </span>
+                                ) : (
+                                  <span style={{ background: "var(--success-bg)", color: "var(--success)", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
+                                    {e.recordCount} record{e.recordCount !== 1 ? "s" : ""}
+                                  </span>
+                                )
                               ) : (
                                 <span style={{ background: "#EFEEEC", color: "#7A756F", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6 }}>
                                   No Records
                                 </span>
                               )}
-                              {needsReview && (
-                                <span style={{
-                                  background: "var(--danger-bg)", color: "var(--danger)", fontSize: 11, fontWeight: 700,
-                                  padding: "2px 8px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4,
-                                }}>
-                                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--danger)" }} />
-                                  Needs Review
-                                </span>
-                              )}
                             </div>
                             <div style={{ marginTop: 3, fontSize: 12, color: "var(--muted)" }}>
-                              {e.searchType && <>{e.searchType} &middot; </>}
                               {e.jurisdiction && <>{e.jurisdiction} &middot; </>}
-                              {e.thruDate && <>Thru {e.thruDate} &middot; </>}
-                              {e.createdAt ? `Uploaded ${new Date(e.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
+                              {e.thruDate && <>Thru {e.thruDate}</>}
                             </div>
                           </div>
 
-                          {needsReview ? (
+                          {needsPdf ? (
+                            <button
+                              onClick={() => handleRowUploadClick(e.id)}
+                              disabled={isRowUploading}
+                              style={{
+                                background: "#9B1C1C", color: "#fff", fontWeight: 700, fontSize: 12.5,
+                                padding: "7px 14px", border: "none", borderRadius: 8,
+                                display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+                                opacity: isRowUploading ? 0.6 : 1,
+                              }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 19h14"/></svg>
+                              {isRowUploading ? "Uploading..." : "Upload"}
+                            </button>
+                          ) : needsReview ? (
                             <button
                               onClick={() => onReview(e.id, e.fileName, e.pageCount)}
                               style={{
