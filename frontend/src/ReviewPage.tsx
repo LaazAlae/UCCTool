@@ -28,10 +28,10 @@ interface Props {
   onDone?: () => void;
 }
 
-type Stage = "ocr" | "extracting" | "reviewing" | "error";
+type Stage = "loading" | "ocr" | "extracting" | "reviewing" | "error";
 
 export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageCount, projectId, onDone }: Props) {
-  const [stage, setStage] = useState<Stage>("ocr");
+  const [stage, setStage] = useState<Stage>("loading");
   const [error, setError] = useState<string | null>(null);
   const [ocrBlocks, setOcrBlocks] = useState(0);
   const [entries, setEntries] = useState<ListingEntry[]>([]);
@@ -49,10 +49,11 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
 
   useEffect(() => {
     let cancelled = false;
+    let slowTimer: ReturnType<typeof setTimeout>;
 
     (async () => {
       try {
-        setStage("ocr");
+        setStage("loading");
         setError(null);
 
         if (!initPageCount || !initFileName) {
@@ -62,11 +63,15 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
           setFileName(jobInfo.fileName);
         }
 
+        slowTimer = setTimeout(() => { if (!cancelled) setStage("ocr"); }, 400);
         const ocrRes = await api.ocr(jobId);
+        clearTimeout(slowTimer);
         if (cancelled) return;
         setOcrBlocks(ocrRes.blocks);
 
-        setStage("extracting");
+        if (!ocrRes.cached) {
+          setStage("extracting");
+        }
         const res = await api.extract(jobId);
         if (cancelled) return;
         const ext = res.extractions;
@@ -99,7 +104,7 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(slowTimer); };
   }, [jobId]);
 
   function updateField(index: number, key: FieldKey, patch: Partial<ListingEntry[FieldKey]>) {
@@ -279,21 +284,25 @@ export function ReviewPage({ jobId, fileName: initFileName, pageCount: initPageC
     confirmed: h.confirmed,
   }));
 
-  if (stage === "ocr" || stage === "extracting") {
+  if (stage === "loading" || stage === "ocr" || stage === "extracting") {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: 400, flexDirection: "column", gap: 12 }}>
         <div style={{ width: 40, height: 40, border: "3px solid var(--border)", borderTopColor: "var(--primary)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
         <p style={{ fontWeight: 500 }}>
-          {stage === "ocr" ? "Scanning document..." : "Extracting records..."}
+          {stage === "loading" ? "Loading..." : stage === "ocr" ? "Scanning document..." : "Extracting records..."}
         </p>
-        <p style={{ fontSize: 13, color: "var(--muted)" }}>
-          {stage === "ocr"
-            ? `Reading text from ${pageCount} page${pageCount !== 1 ? "s" : ""} using OCR`
-            : `Analyzing ${ocrBlocks.toLocaleString()} text blocks with AI`}
-        </p>
-        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-          Step {stage === "ocr" ? "1" : "2"} of 2
-        </p>
+        {stage !== "loading" && (
+          <p style={{ fontSize: 13, color: "var(--muted)" }}>
+            {stage === "ocr"
+              ? `Reading text from ${pageCount} page${pageCount !== 1 ? "s" : ""} using OCR`
+              : `Analyzing ${ocrBlocks.toLocaleString()} text blocks with AI`}
+          </p>
+        )}
+        {stage !== "loading" && (
+          <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+            Step {stage === "ocr" ? "1" : "2"} of 2
+          </p>
+        )}
       </div>
     );
   }

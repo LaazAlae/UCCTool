@@ -15,6 +15,8 @@ from config import settings
 from cost import estimate_ocr_cost
 from errors import AppError
 
+_MAX_OCR_WORKERS = 4
+
 
 def run_ocr(pdf_bytes: bytes) -> tuple[list[dict], dict]:
     """Run OCR on PDF bytes. Returns (blocks, usage_dict)."""
@@ -26,22 +28,26 @@ def run_ocr(pdf_bytes: bytes) -> tuple[list[dict], dict]:
 
 
 def _textract_ocr(pdf_bytes: bytes) -> tuple[list[dict], dict]:
-    client = boto3.client("textract", region_name=settings.aws_region)
     reader = PdfReader(io.BytesIO(pdf_bytes))
     page_count = len(reader.pages)
 
-    # Textract sync API works page-by-page: extract each page as standalone PDF bytes.
-    def process_page(page_idx: int) -> list[dict]:
+    # One shared client — boto3 clients are thread-safe and reuse the SSL
+    # connection pool, avoiding the concurrent-handshake crash.
+    client = boto3.client("textract", region_name=settings.aws_region)
+
+    page_pdfs: list[bytes] = []
+    for page_idx in range(page_count):
         writer = PdfWriter()
         writer.add_page(reader.pages[page_idx])
         buf = io.BytesIO()
         writer.write(buf)
+        page_pdfs.append(buf.getvalue())
 
+    def process_page(page_idx: int) -> list[dict]:
         resp = client.analyze_document(
-            Document={"Bytes": buf.getvalue()},
+            Document={"Bytes": page_pdfs[page_idx]},
             FeatureTypes=["TABLES"],
         )
-
         blocks = []
         for block in resp.get("Blocks", []):
             if block.get("BlockType") == "LINE" and block.get("Text"):
@@ -57,10 +63,9 @@ def _textract_ocr(pdf_bytes: bytes) -> tuple[list[dict], dict]:
                 })
         return blocks
 
-    # Pages run concurrently for speed, then reassembled in page order below.
     results: dict[int, list[dict]] = {}
     errors: list[dict] = []
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=min(_MAX_OCR_WORKERS, page_count)) as pool:
         futures = {pool.submit(process_page, i): i for i in range(page_count)}
         for future in as_completed(futures):
             page_idx = futures[future]
